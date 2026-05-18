@@ -73,8 +73,13 @@ def _dividir_chunks(documentos: list[dict]) -> tuple[list[str], list[dict]]:
 
     for doc in documentos:
         chunks = splitter.split_text(doc["conteudo"])
+
         for i, chunk in enumerate(chunks):
-            textos.append({
+            # Texto do chunk
+            textos.append(chunk)
+
+            # Metadados do chunk
+            metadados.append({
                 "fonte": doc["fonte"],
                 "titulo": doc["titulo"],
                 "chunk_index": i,
