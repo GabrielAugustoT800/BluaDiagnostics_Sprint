@@ -1,179 +1,225 @@
-"""Wrapper unificado para Qwen — backends DashScope e Ollama via OpenAI SDK.
+"""
+Responsabilidades:
+- Conexão com DashScope International (qwen-plus)
+- Suporte a function calling (tools)
+- Suporte a hybrid thinking mode (thinking=ON/OFF por agente)
+- Tratamento de erros e retries
+- Interface única para todos os agentes
 
-DashScope e Ollama expõem endpoint OpenAI-compatible, então o mesmo SDK
-serve para os dois. A `DASHSCOPE_API_KEY` é resolvida na ordem
-os.environ → Colab Secrets → .env. A resolução acontece dentro de
-`_build_client`, então importar este módulo não dispara leitura de
-secrets.
+Uso:
+    from src.llm.qwen_client import chat
+
+    resposta = chat(
+        messages=[{"role": "user", "content": "Olá"}],
+        tools=None,
+        enable_thinking=False,
+        temperature=0.3
+    )
 """
 
 from __future__ import annotations
 
 import os
-import re
-from pathlib import Path
-from typing import Any, Literal
-
+import time
+from typing import Any
 from openai import OpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-# Endpoints OpenAI-compatible
-_DASHSCOPE_BASE = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-_OLLAMA_BASE_DEFAULT = "http://localhost:11434/v1"
+# CONSTANTES
 
+# Modelo fixo — alterado apenas via variável de ambiente
+_MODELO_PADRAO = os.getenv("QWEN_DASHCOPE_MODEL", "qwen-plus")
 
-def _carregar_chave_dashscope() -> str | None:
-    """Resolve DASHSCOPE_API_KEY: os.environ → Colab Secrets → .env."""
+# Base URL do DashScope International
+_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+
+# Temperatura padrão por tipo de agente
+# Roteador e checkup: baixa — respostas determinísticas
+# Triagem e suporte: média — raciocínio mais elaborado
+TEMPERATURA_PADRAO = 0.3
+TEMPERATURA_RACIOCINIO = 0.5
+
+# Máximo de tokens por resposta
+MAX_TOKENS_PADRAO = 1024
+MAX_TOKENS_RACIOCINIO = 2048 # thinking = ON gasta mais tokens
+
+# Cliente OpenAI-compatible (DashScope)
+def _obter_cliente() -> OpenAI:
+    """
+    Instancia o cliente OpenAI apontando para DashScope.
+    Lança RuntimeError se a chave não estiver configurada.
+    """
     chave = os.getenv("DASHSCOPE_API_KEY")
-    if chave:
-        return chave
+    if not chave:
+        raise RuntimeError(
+            "DASHSCOPE_API_KEY não encontrada."
+            "No Colab, configure em Secrets (ícone 🔑) com Notebook access habilitado."
+        )
+    return OpenAI(api_key= chave, base_url= _BASE_URL)
 
-    try:
-        from google.colab import userdata  # type: ignore
-
-        chave = userdata.get("DASHSCOPE_API_KEY")
-        if chave:
-            os.environ["DASHSCOPE_API_KEY"] = chave
-            return chave
-    except Exception:
-        pass
-
-    try:
-        from dotenv import load_dotenv  # type: ignore
-
-        env_path = Path(__file__).resolve().parents[2] / ".env"
-        if env_path.exists():
-            load_dotenv(env_path, override=False)
-            return os.getenv("DASHSCOPE_API_KEY")
-    except ImportError:
-        pass
-
-    return None
-
-
-def _modelo_padrao(backend: str) -> str:
-    """Lê o modelo no momento da chamada (não no import).
-
-    Necessário porque `colab_setup.preparar_ambiente()` pode rodar
-    depois do primeiro `import` deste módulo.
-    """
-    if backend == "dashscope":
-        return os.getenv("QWEN_DASHSCOPE_MODEL", "qwen-plus")
-    return os.getenv("QWEN_OLLAMA_MODEL", "qwen:9b")
-
-
-# Regex para isolar o bloco <think>...</think> e o conteúdo limpo
-_THINK_PATTERN = re.compile(r"<think>(.*?)</think>", re.DOTALL)
-
-
-def _build_client(backend: Literal["dashscope", "ollama"]) -> OpenAI:
-    """Constrói o client OpenAI-compatible apontando para o backend correto."""
-    if backend == "dashscope":
-        api_key = _carregar_chave_dashscope()
-        if not api_key:
-            raise RuntimeError(
-                "DASHSCOPE_API_KEY não configurada. No Colab, adicione-a em "
-                "Secrets (ícone 🔑) com Notebook access habilitado. Em ambiente "
-                "local, defina via shell ou crie um arquivo .env na raiz."
-            )
-        return OpenAI(api_key=api_key, base_url=_DASHSCOPE_BASE)
-
-    if backend == "ollama":
-        # api_key é placeholder — Ollama aceita qualquer string não vazia.
-        base_url = os.getenv("OLLAMA_BASE_URL", _OLLAMA_BASE_DEFAULT)
-        return OpenAI(api_key="ollama-local", base_url=base_url)
-
-    raise ValueError(f"Backend desconhecido: {backend}")
-
-
-def _separar_thinking(content: str | None) -> tuple[str, str | None]:
-    """Extrai o bloco <think> e devolve (conteúdo_limpo, thinking_ou_None).
-
-    O conteúdo do <think> nunca deve ser exposto ao usuário.
-    """
-    if not content:
-        return "", None
-
-    match = _THINK_PATTERN.search(content)
-    if not match:
-        return content.strip(), None
-
-    thinking = match.group(1).strip()
-    visivel = _THINK_PATTERN.sub("", content).strip()
-    return visivel, thinking
-
+# Função principal de chat
+@retry(
+    retry = retry_if_exception_type(Exception),
+    stop = stop_after_attempt(3),
+    wait = wait_exponential(multiplier = 1, min = 2, max = 10),
+    reraise = True,
+)
 
 def chat(
-    messages: list[dict[str, Any]],
-    tools: list[dict[str, Any]] | None = None,
+    messages = list[dict],
+    tools: list[dict] | None = None,
     enable_thinking: bool = False,
-    temperature: float = 0.3,
-    response_format: dict[str, Any] | None = None,
-    backend: Literal["dashscope", "ollama"] = "dashscope",
-    model: str | None = None,
+    temperature: int = TEMPERATURA_PADRAO,
+    max_tokens: int | None = None,
+    modelo: str | None = None
 ) -> dict[str, Any]:
-    """Interface única usada por todos os agentes do BluaDiagnostics.
+    """
+    Envia mensagens ao Qwen via DashScope e retorna a resposta
 
     Args:
-        messages: histórico no formato OpenAI ({role, content}).
-        tools: lista de tool specs no padrão OpenAI tools (opcional).
-        enable_thinking: ativa hybrid thinking mode do Qwen.
-        temperature: temperatura de amostragem.
-        response_format: pode ser ``{"type": "json_object"}`` para saída JSON.
-        backend: ``"dashscope"`` (cloud, padrão no Colab) ou ``"ollama"``.
-        model: força um modelo específico — caso contrário usa default do backend.
+        messages: Histórico de mensagens no formato OpenAI
+                  [{"role": "system"|"user"|"assistant", "content": "..."}]
+        tools: Lista de tools no formato JSON Schema OpenAI/Anthropic.
+               None desativa function calling.
+        enable_thinking: Liga o hybrid thinking mode do Qwen.
+                         Use True em agentes de triagem e suporte clínico.
+                         Use False no roteador para latência mínima.
+        temperature: Temperatura de geração. 0.0 a 1.0.
+        max_tokens: Limite de tokens na resposta.
+                    Se None, usa MAX_TOKENS_THINKING se thinking=True,
+                    senão MAX_TOKENS_PADRAO.
+        modelo: Sobrescreve o modelo padrão. Usar com cautela.
 
     Returns:
-        Dicionário com chaves ``content`` (texto limpo, sem <think>),
-        ``thinking`` (conteúdo do bloco <think> ou None), ``tool_calls`` (lista
-        de chamadas de função, se houver) e ``raw`` (resposta crua do SDK).
-    """
-    client = _build_client(backend)
-    chosen_model = model or _modelo_padrao(backend)
+        Dicionário com:
+        - content (str): texto da resposta
+        - tool_calls (list | None): chamadas de tools se houver
+        - thinking (str | None): conteúdo do bloco de raciocínio
+        - usage (dict): tokens consumidos
+        - finish_reason (str): motivo de parada
 
-    kwargs: dict[str, Any] = {
-        "model": chosen_model,
+    Raises:
+        RuntimeError: chave não configurada
+        Exception: erro de API após 3 tentativas
+    """
+
+    cliente = _obter_cliente()
+
+    # Ajustar o max_tokens de acordo com o thinking mode
+    if max_tokens is None:
+        max_tokens = MAX_TOKENS_RACIOCINIO if enable_thinking else MAX_TOKENS_PADRAO
+    
+    # Parâmetros da chamada
+    params: dict[str, Any] = {
+        "model": modelo or _MODELO_PADRAO,
         "messages": messages,
         "temperature": temperature,
-        # `enable_thinking` é específico do Qwen; passamos via extra_body
-        # porque não faz parte da API OpenAI padrão.
-        "extra_body": {"enable_thinking": enable_thinking},
+        "max_tokens": max_tokens,
     }
+
+    # Adiciona tools se forem fornecidas
     if tools:
-        kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"
-    if response_format:
-        kwargs["response_format"] = response_format
+        params["tools"] = tools
+        params["tool_choice"] = "auto"
 
-    raw = client.chat.completions.create(**kwargs)
-    msg = raw.choices[0].message
+    # Hybrid thinking mode - parâmetro do Qwen
+    # Quando True, o modelo raciocina antes de responder.
+    # Gerando um bloco <think>...<think> interno
+    if enable_thinking:
+        params["extra_body"] = {"enable_thinking": True}
 
-    content_clean, thinking = _separar_thinking(msg.content)
+    # Chamada à API
+    resposta = cliente.chat.completions.create(**params)
+    mensagem = resposta.choices[0].message
 
-    tool_calls: list[dict[str, Any]] = []
-    if getattr(msg, "tool_calls", None):
-        for tc in msg.tool_calls:
-            tool_calls.append(
-                {
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": tc.function.arguments,
-                }
-            )
+    # Extrair o conteúdo de thinking, se houver
+    # O Qwen retorna o bloco de raciocínio em reasoning_content
 
+    thinking = None
+    if hasattr(mensagem, "reasoning_content"):
+        thinking = mensagem.reasoning_content
+
+    # Extrair tool calls, se houver
+    tool_calls = None
+    if hasattr(mensagem, "tool_calls") and mensagem.tool_calls:
+        tool_calls = [
+            {
+                "id": tc.id,
+                "name": tc.function.name,
+                "arguments": tc.function.arguments
+            }
+            for tc in mensagem.tool_calls
+        ]
     return {
-        "content": content_clean,
-        "thinking": thinking,
+        "content": mensagem.content or "",
         "tool_calls": tool_calls,
-        "raw": raw.model_dump() if hasattr(raw, "model_dump") else raw,
+        "thinking": thinking,
+        "usage":{
+            "prompt_tokens": resposta.usage.prompt_tokens,
+            "completion_tokens": resposta.usage.completion_tokens,
+            "total_tokens": resposta.usage.total_tokens
+
+        },
+        "finish_reason": resposta.choices[0].finish_reason
     }
 
+# Utilitários
 
-class QwenClient:
-    """Versão OO da `chat`, útil para fixar o backend uma vez."""
+def smoke_test() -> bool:
+    """
+    Ping ao modelo para validar credenciais e conectividade.
+    Retorna True se bem-sucedido, False no contrário
+    """
 
-    def __init__(self, backend: Literal["dashscope", "ollama"] = "dashscope") -> None:
-        self.backend = backend
+    try:
+        resposta = chat(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Responda em ma frase curta, em português brasileiro."
+                },
+                {
+                    "role": "user",
+                    "content": "Você está funcionando?"
+                }
+            ],
+            enable_thinking= False,
+            temperature= 0.1
+        )
+        print(f"[smoke_test] OK -> resposta: {resposta['content']!r}")
+        print(f"[smoke_test] Tokens: {resposta['usage']}")
+        return True
+    
+    except Exception as e:
+        print(f"[smoke_test] FALHOU: {type(e).__name__}: {e}")
+        return False
 
-    def chat(self, **kwargs: Any) -> dict[str, Any]:
-        kwargs.setdefault("backend", self.backend)
-        return chat(**kwargs)
+def formatar_mensagem(
+        system_prompt: str,
+        historico: list[dict],
+        mensagem_usuario: str
+) -> list[dict]:
+    """
+    Monta a lista de mensagens no formato esperado pela API.
+
+    Args:
+        system_prompt: Conteúdo do system prompt do agente.
+        historico: Lista de turnos anteriores
+                   [{"role": "user"|"assistant", "content": "..."}]
+        mensagem_usuario: Mensagem atual do usuário.
+
+    Returns:
+        Lista formatada pronta para passar ao chat().
+    """
+    mensagens = [
+        {
+            "role": "system",
+            "content": system_prompt
+        }
+    ]
+    mensagens.extend(historico)
+    mensagens.append({
+        "role": "user",
+        "content": mensagem_usuario
+    })
+    return mensagens

@@ -1,111 +1,167 @@
-# Decisão de modelo — Qwen vs Llama 3.3 70B
+# Decisão de Modelo — BluaDiagnostics
+## Care Plus | Plataforma Blua
+## Sprint 1 — PoC Acadêmica FIAP
+## Versão: 1.0.0 | 2026-05-15
 
-> Documento de Architectural Decision Record (ADR) para a Sprint 1 do
-> BluaDiagnostics. Justifica a escolha do Qwen sobre o Llama 3.3 70B,
-> únicos candidatos avaliados nesta sprint conforme escopo definido.
+---
 
-## Contexto
+## 1. Contexto da Decisão
 
-A operadora Care Plus precisa de um LLM que sustente o BluaDiagnostics em
-produção. O sistema é clínico, opera em PT-BR, lida com dados sensíveis
-sob LGPD, exige function calling robusto e precisa rodar tanto em nuvem
-(DashScope) quanto em ambiente on-premise (Ollama). Avaliamos dois modelos
-abertos competitivos: **Qwen** (família Alibaba) e **Llama 3.3 70B**
-(Meta).
+A escolha do modelo de linguagem é a decisão técnica mais
+crítica do BluaDiagnostics. O agente lida com contexto clínico
+cardiovascular — qualquer falha em seguir restrições pode
+resultar em orientação inadequada ao beneficiário.
 
-## Critérios de avaliação
+Os critérios avaliados foram definidos pelo challenge:
+**latência, custo, privacidade/LGPD e qualidade clínica.**
 
-1. Instruction following (capacidade de seguir guardrails clínicos).
-2. Qualidade de PT-BR clínico nativo.
-3. Function calling (tool use) confiável.
-4. Hybrid thinking mode (raciocínio sob demanda sem trocar de modelo).
-5. Licença comercial favorável.
-6. Variantes de tamanho que permitam on-prem viável.
-7. Ecossistema de frameworks de agente.
+Dois modelos foram avaliados em profundidade:
+- **Qwen qwen-plus** (Alibaba — via DashScope International)
+- **Llama 3.3 70B** (Meta — via Groq API ou on-prem)
 
-## Tabela comparativa
+---
 
-| Critério | Qwen (escolhido) | Llama 3.3 70B |
+## 2. Tabela Comparativa — Critérios Obrigatórios
+
+| Critério | Qwen qwen-plus (escolhido) | Llama 3.3 70B |
 |---|---|---|
-| Lançamento | 2025–2026, atualizações frequentes | dez/2024 |
-| PT-BR nativo | treinado em 201 idiomas com qualidade clínica | bom em PT-BR mas sem foco médico |
-| Function calling | nativo, JSON Schema OpenAI-compatible | suportado via templates, com mais reescrita |
-| IFBench (instruction follow) | 76,5 (resultado público) | ~71 |
-| Licença | Apache 2.0 — comercial liberado | Llama Community License com restrições (>700M MAU, branding etc.) |
-| Hybrid thinking mode | sim, toggle por chamada via `enable_thinking` | não — raciocínio é sempre uniforme |
-| Janela de contexto | até 1M tokens em variantes especializadas | 128K |
-| Arquitetura | dense + variantes MoE (35B-A3B ativa apenas 3B) | dense 70B, custo de inferência maior |
-| Custo cloud | DashScope International, preço competitivo | requer hosts próprios ou parceiros |
-| On-prem | Ollama, vLLM, llama.cpp — quantizações <16GB | Ollama, vLLM — exige >40GB de VRAM em FP16 |
-| Frameworks de agente | `qwen-agent` oficial + LangGraph | LangGraph, LangChain |
+| **Latência** | ~800ms via DashScope cloud | >60s em CPU — GPU T4 necessária no Colab |
+| **Custo** | Gratuito — 1M tokens grátis por 90 dias no DashScope free trial | Gratuito — mas exige GPU paga no Colab ou Groq com risco LGPD |
+| **Privacidade / LGPD** | Dado transita pelo DashScope Internacional. Mitigação: modo Ollama on-prem disponível | Via Groq: dado transita fora do Brasil. On-prem: resolve LGPD mas inviável no Colab gratuito sem GPU |
+| **Qualidade clínica** | IFBench 76,5 — instruction following superior, PT-BR nativo, 201 idiomas | IFBench ~71 — bom desempenho geral, sem foco clínico em português |
 
-## Cinco motivos centrais para Qwen
+---
 
-### 1. Instruction following (IFBench 76,5)
+## 3. Tabela Comparativa — Critérios Técnicos Adicionais
 
-O Qwen lidera em benchmarks de seguimento de instrução. Em saúde
-digital, a regra inegociável precisa ser respeitada **incondicionalmente**.
-Diferenças de 5 pontos no IFBench se traduzem em centenas de violações
-evitadas por mês na escala da Care Plus (600k+ beneficiários).
+| Critério | Qwen qwen-plus | Llama 3.3 70B |
+|---|---|---|
+| Lançamento | 2025–2026 | Dezembro/2024 |
+| Arquitetura | Dense + MoE 35B-A3B | Dense 70B |
+| Function calling | Nativo OpenAI-compatible | Suportado, requer mais reescrita |
+| Hybrid thinking mode | Sim — toggle por chamada sem trocar modelo | Não disponível |
+| Contexto máximo | Até 1M tokens | 128K tokens |
+| Licença | Apache 2.0 — sem restrições comerciais | Llama Community License — restrições de uso comercial |
+| Disponibilidade Colab CPU | Sim — inferência em cloud via DashScope | Não — exige GPU robusta para rodar on-prem |
+| Frameworks de agente | `qwen-agent` oficial + LangGraph | LangGraph |
 
-### 2. PT-BR nativo de qualidade clínica
+---
 
-A família Qwen foi treinada em 201 idiomas com cobertura ampla de PT-BR,
-incluindo termos clínicos. Em testes informais com bulas e protocolos de
-triagem, mantém terminologia consistente sem alucinar termos em espanhol
-ou português europeu — problema recorrente quando se usa Llama em PT-BR.
+## 4. Análise por Critério
 
-### 3. Hybrid thinking mode
+### Latência
 
-O toggle `enable_thinking` permite que o Roteador opere em modo rápido
-(latência baixa, sem `<think>`) e o Triagem opere em modo deliberativo
-sem trocar de modelo. Isso reduz custo operacional e simplifica a stack.
-O Llama 3.3 não tem essa flexibilidade nativa — exige modelos separados
-ou prompting custoso.
+O Qwen via DashScope responde em aproximadamente 800ms em
+chamadas simples — viável para uma experiência conversacional
+fluida no Colab. O Llama 3.3 70B exige GPU T4 para rodar
+em tempo aceitável no Colab — sem GPU, o tempo de resposta
+ultrapassa 60 segundos por turno, inviabilizando a demo.
 
-### 4. Licença Apache 2.0
+**Vencedor: Qwen**
 
-A Care Plus é uma operadora comercial. Apache 2.0 é a licença mais
-permissiva entre LLMs abertos competitivos: liberdade total de uso,
-modificação e redistribuição, inclusive como serviço. A Llama Community
-License impõe restrições que tornam o programa de white-label do app
-Blua arriscado juridicamente.
+### Custo
 
-### 5. Eficiência via MoE e variantes leves
+Ambos são gratuitos dentro das limitações de cada plataforma.
+O DashScope oferece 1 milhão de tokens gratuitos por 90 dias
+sem necessidade de cartão de crédito para ativação do free
+trial. O Groq oferece plano gratuito para Llama, mas com
+rate limits mais restritivos e sem garantia de disponibilidade
+de GPU no Colab.
 
-A variante Qwen 35B-A3B (Mixture of Experts) ativa apenas ~3B
-parâmetros em inferência, oferecendo qualidade próxima de modelos densos
-muito maiores com fração do custo. Para servidor on-prem da Care Plus,
-isso significa dimensionar GPU para 24GB em vez de 80GB, viabilizando
-hardware existente.
+**Empate — leve vantagem para Qwen pela estabilidade do free
+trial DashScope.**
 
-## Riscos e mitigações
+### Privacidade / LGPD
 
-- **Dependência de fornecedor (Alibaba)**: mitigado pela disponibilidade
-  do modelo via Ollama, llama.cpp e weights em Hugging Face.
-- **Cobertura clínica imperfeita**: mitigado pelo RAG com knowledge base
-  curada (7 documentos em PT-BR com red flags, bulas, políticas).
-- **Possível degradação em jailbreaks sofisticados**: mitigado pelo
-  Safety Layer que faz uma segunda chamada de auditoria e pode reprovar
-  respostas que escapem do guardrail principal.
+Nenhum dos dois resolve LGPD completamente no ambiente Colab —
+dados transitam por servidores fora do Brasil em ambos os casos.
+A diferença está na mitigação disponível:
 
-## Decisão
+O Qwen oferece modo on-prem via Ollama (`qwen:14b`) para o
+projeto final — dado não sai da máquina, LGPD resolvida.
+O Llama 3.3 70B on-prem exige hardware robusto (GPU com 40GB+
+de VRAM) inviável para o contexto acadêmico atual.
 
-Adotamos **Qwen** como modelo principal do BluaDiagnostics, com
-duas configurações homologadas:
+Para a Sprint 1, ambos os modelos operam com dados mockados
+sem PII real — o risco LGPD é mitigado na origem.
 
-- **Configuração A (cloud)**: `qwen-plus` via DashScope International (família Qwen fixada),
-  para o ambiente de homologação e a primeira fase de produção.
-- **Configuração B (on-prem)**: `qwen:9b` via Ollama, para clientes
-  corporativos com requisitos de isolamento total ou para o ambiente de
-  contingência.
+**Vencedor: Qwen — pela viabilidade real da migração on-prem.**
 
-## Revisão
+### Qualidade Clínica
 
-Esta decisão será revisitada na Sprint 4 ou quando:
+O IFBench (Instruction Following Benchmark) mede a capacidade
+do modelo de seguir instruções complexas — critério diretamente
+relacionado à eficácia dos guardrails clínicos. Qwen 76,5 vs
+Llama ~71.
 
-- Surgir uma versão maior do Llama (Llama 4) com IFBench superior e
-  licença mais flexível.
-- Aparecer um modelo brasileiro especializado em saúde (ex.: BR-LLM
-  cardiometabólico) que valha o trade-off de cobertura por especialização.
-- Mudar o panorama regulatório ANS/ANPD que torne on-prem mandatório.
+Em contexto clínico, instruction following é mais importante
+que capacidade criativa — o agente precisa respeitar restrições
+invioláveis (não diagnosticar, não prescrever, escalar red flags)
+mesmo sob pressão de jailbreak. Modelos com IFBench mais alto
+tendem a manter restrições com maior consistência.
+
+O suporte nativo a português com 201 idiomas no treinamento do
+Qwen reduz alucinação terminológica em bulas e protocolos da
+SBC em PT-BR.
+
+**Vencedor: Qwen**
+
+---
+
+## 5. Decisão Final
+
+**Modelo escolhido: Qwen qwen-plus via DashScope International**
+
+Cinco motivos consolidados:
+
+1. **Instruction following superior (IFBench 76,5)** — garante
+   que guardrails clínicos sejam respeitados de forma consistente,
+   inclusive sob tentativas de jailbreak.
+
+2. **PT-BR nativo de qualidade clínica** — reduz alucinação
+   terminológica em protocolos cardiovasculares e bulas em
+   português brasileiro.
+
+3. **Hybrid thinking mode** — permite `thinking=ON` nos agentes
+   de triagem e suporte clínico (raciocínio mais profundo) e
+   `thinking=OFF` no roteador (latência mínima) sem trocar de
+   modelo.
+
+4. **Compatível com Colab CPU** — toda inferência roda em cloud
+   via DashScope, sem necessidade de GPU paga no Colab gratuito.
+
+5. **Caminho claro para on-prem** — migração para `qwen:14b`
+   via Ollama no projeto final resolve LGPD sem reescrever
+   arquitetura — apenas troca o parâmetro `backend`.
+
+---
+
+## 6. Risco Documentado — LGPD
+
+**Risco:** dados de saúde transitam pelo DashScope International
+(servidores fora do Brasil) durante a Sprint 1.
+
+**Mitigação na Sprint 1:** todos os dados utilizados são mockados
+— nenhum dado real de beneficiário é processado. O risco LGPD
+é mitigado na origem.
+
+**Mitigação no projeto final:** modo Ollama on-prem com
+`qwen:14b` rodando em servidor local — dado não sai da máquina,
+conformidade LGPD garantida.
+
+---
+
+## 7. Modelos Descartados e Motivos
+
+| Modelo | Motivo do descarte |
+|---|---|
+| Qwen 3.5 / 3.6 | Bugs de function calling em XML ainda instáveis em Ollama e llama.cpp (abril/2026). Promissor para versões futuras. |
+| Llama 3.1 8B | Qualidade clínica inferior ao 3.3 70B. Descartado como modelo de comparação por ser faixa de tamanho diferente. |
+| GPT-4o | Pago — fora das restrições do projeto acadêmico. |
+| Gemini Pro | Sem free tier estável para function calling no momento da avaliação. |
+
+---
+
+*Documento elaborado para a Sprint 1 do BluaDiagnostics.*
+*Decisões revisáveis nas próximas sprints conforme evolução
+dos modelos e requisitos do projeto.*

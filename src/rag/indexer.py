@@ -1,141 +1,153 @@
-"""Indexação da knowledge base no ChromaDB com embeddings multilíngues.
+"""
+Indexação da knowledge base cardiovascular no ChromaDB.
 
-Quebra os 7 documentos .md em chunks de ~1500 chars, gera embeddings
-com `intfloat/multilingual-e5-large` (~1 GB no primeiro download, depois
-cache) e persiste em ChromaDB. O modelo de embeddings foi escolhido por
-performar bem em PT-BR sem fine-tuning e rodar em CPU/GPU.
+Responsabilidades:
+- Carregar os 7 documentos da knowledge_base/
+- Dividir em chunks via RecursiveCharacterTextSplitter
+- Gerar embeddings com multilingual-e5-large
+- Persistir no ChromaDB local
+
+Uso:
+    from src.rag import indexar_knowledge_base
+    indexar_knowledge_base()  # executar uma vez por sessão do Colab
 """
 
 from __future__ import annotations
-
 import os
 from pathlib import Path
-from typing import Any
-
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
+from chromadb import PersistentClient
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Diretórios
-_KB_DIR = Path(__file__).resolve().parents[2] / "knowledge_base"
-_CHROMA_DIR = Path(os.getenv("CHROMA_PERSIST_DIR", str(Path(__file__).resolve().parents[2] / "chroma_db")))
+# Configurações
 
-# Mapeamento nome de arquivo → tipo de conteúdo (para metadados)
-_TIPO_POR_ARQUIVO: dict[str, str] = {
-    "bulas_resumidas.md": "bula",
-    "triagem_manchester_simplificado.md": "protocolo",
-    "politicas_care_plus_telemedicina.md": "politica",
-    "red_flags_clinicas.md": "red_flag",
-    "cartilha_beneficiario_blua.md": "cartilha",
-    "protocolos_check_up_preventivo.md": "preventivo",
-    "mapa_especialidades.md": "especialidade",
-}
+# Diretório da knowledge base
+KB_DIR = Path(__file__).resolve().parents[2] / "knowledge_base"
 
-_COLLECTION = "bluadiagnostics_kb"
-_EMBEDDING_MODEL = "intfloat/multilingual-e5-large"
+# Diretório de persistência do ChromaDB
+CHROMA_DIR = Path(
+    os.getenv("CHROMA_PERSIST_DIR", str(Path(__file__).resolve().parents[2] / "chroma_db"))
+)
 
+# Nome da coleção ChromaDB
+COLECAO_NOME = "bluadiagnostics_cardiovascular"
 
-def _embedding_function() -> Any:
-    return embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=_EMBEDDING_MODEL
-    )
+# Modelo de embeddings - multilingual, suporta PT-BR nativamente
+MODELO_EMBEDDINGS = "intfloat/multilingual-e5-large"
 
+# Configuração do splitter (divisor)
+CHUNK_SIZE = 800     # caracteres por chunk (bloco: divisão de um grande volume de dados em partes menores e mais gerenciáveis)
+CHUNK_OVERLAP = 100  # sobreposição entre chunks para manter contexto
 
-def _client() -> chromadb.ClientAPI:
-    """Cliente Chroma persistente. Telemetria desligada para LGPD."""
-    _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-    return chromadb.PersistentClient(
-        path=str(_CHROMA_DIR),
-        settings=Settings(anonymized_telemetry=False, allow_reset=True),
-    )
+# Funções
 
-
-def get_collection() -> chromadb.api.models.Collection.Collection:
-    """Retorna (ou cria) a collection persistida."""
-    return _client().get_or_create_collection(
-        name=_COLLECTION,
-        embedding_function=_embedding_function(),
-        metadata={"hnsw:space": "cosine"},
-    )
-
-
-def _splitter() -> RecursiveCharacterTextSplitter:
-    """Chunks de ~1500 chars com 200 de overlap, cortando em fronteiras Markdown.
-
-    A lista de separadores prioriza cabeçalhos H2/H3 e quebras de
-    parágrafo, evitando partir frases no meio.
+def _carregar_documentos () -> list[dict]:
     """
-    return RecursiveCharacterTextSplitter(
-        chunk_size=1500,
-        chunk_overlap=200,
-        separators=["\n## ", "\n### ", "\n\n", "\n", ". ", " "],
+    Carrega todos os arquivos .md da knowledge_base/.
+    Retorna lista de dicionários com conteúdo e metadados.
+    """
+    documentos = []
+    for arquivo in sorted(KB_DIR.glob("*.md")):
+        conteudo = arquivo.read_text(encoding= "utf-8")
+        documentos.append({
+            "conteudo": conteudo,
+            "fonte": arquivo.name,
+            "titulo": arquivo.stem.replace("_", " ").title()
+        })
+        print(f" [indexer] Carregado: {arquivo.name} ({len(conteudo)} chars)")
+    return documentos
+
+def _dividir_chunks(documentos: list[dict]) -> tuple[list[str], list[dict]]:
+    """
+    Divide documentos em chunks menores para indexação.
+    Retorna textos e metadados correspondentes.
+    """
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size = CHUNK_SIZE,
+        chunk_overlap = CHUNK_OVERLAP,
+        separators= ["\n## ", "\n### ", "\n\n", "\n", " "]
     )
 
+    textos = []
+    metadados = []
 
-def indexar_knowledge_base(forcar_reindex: bool = False) -> dict[str, Any]:
-    """Indexa todos os documentos da knowledge_base no ChromaDB.
+    for doc in documentos:
+        chunks = splitter.split_text(doc["conteudo"])
+        for i, chunk in enumerate(chunks):
+            textos.append({
+                "fonte": doc["fonte"],
+                "titulo": doc["titulo"],
+                "chunk_index": i,
+                "total_chunks": len(chunks)
+            })
+    return textos, metadados
+
+def indexar_knowledge_base(forcar_reindexacao: bool = False) -> int:
+    """
+    Indexa a knowledge base cardiovascular no ChromaDB.
+    Idempotente — verifica se já foi indexado antes de reprocessar.
 
     Args:
-        forcar_reindex: se True, deleta a collection existente antes de
-            reindexar. Útil quando o conteúdo de KB muda.
+        forcar_reindexacao: Se True, recria a coleção do zero.
 
     Returns:
-        Estatísticas da operação.
+        Número total de chunks indexados.
     """
-    client = _client()
-    if forcar_reindex:
-        try:
-            client.delete_collection(_COLLECTION)
-        except Exception:
-            pass
+    print("[indexer] Iniciando a indexação da knowledge_base cardiovascular...")
 
-    coll = client.get_or_create_collection(
-        name=_COLLECTION,
-        embedding_function=_embedding_function(),
-        metadata={"hnsw:space": "cosine"},
+    # Criar diretório do ChromaDB se não existir
+    CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Instanciar cliente ChromaDB persistente
+    cliente = PersistentClient(path=str(CHROMA_DIR))
+
+    # Verificar se coleção já existe e tem dados
+    colecoes_existentes = [c.name for c in cliente.list_collections()]
+
+    if COLECAO_NOME in colecoes_existentes and not forcar_reindexacao:
+        colecao = cliente.get_collection(COLECAO_NOME)
+        total = colecao.count()
+        if total > 0:
+            print(f"[indexer] Coleção já indexada com {total} chunks." f"\nUse forcar_indexacao = True para reindexar.")
+            return total
+        
+    # Recriar coleção se forçado
+    if COLECAO_NOME in colecoes_existentes and forcar_reindexacao:
+        cliente.delete_collection(COLECAO_NOME)
+        print("[indexer] Coleção anterior removida.")
+
+    # Criar coleção com função de embeddings
+    print(f"[indexer] Carregando modelo de embeddings: {MODELO_EMBEDDINGS}")
+    embedding_fn = SentenceTransformerEmbeddingFunction(
+        model_name=MODELO_EMBEDDINGS
     )
 
-    # Idempotência: pula reindex se a collection já está populada. Use
-    # forcar_reindex=True quando o conteúdo da KB mudou.
-    if coll.count() > 0 and not forcar_reindex:
-        return {
-            "status": "ja_indexado",
-            "total_chunks": coll.count(),
-            "collection": _COLLECTION,
-        }
+    colecao = cliente.create_collection(
+        name=COLECAO_NOME,
+        embedding_function=embedding_fn,
+        metadata={"descricao": "Knowledge base cardiovascular BluaDiagnostics"}
+    )
 
-    splitter = _splitter()
-    documentos: list[str] = []
-    metadados: list[dict[str, Any]] = []
-    ids: list[str] = []
+    # Carregar e dividir documentos
+    print("[indexer] Carregando documentos...")
+    documentos = _carregar_documentos()
 
-    for arquivo in sorted(_KB_DIR.glob("*.md")):
-        tipo = _TIPO_POR_ARQUIVO.get(arquivo.name, "outro")
-        texto = arquivo.read_text(encoding="utf-8")
-        chunks = splitter.split_text(texto)
-        for idx, chunk in enumerate(chunks):
-            documentos.append(chunk)
-            metadados.append(
-                {
-                    "tipo": tipo,
-                    "fonte": arquivo.name,
-                    "chunk_id": idx,
-                }
-            )
-            ids.append(f"{arquivo.stem}_{idx:03d}")
+    print("[indexer] Dividindo em chunks...")
+    textos, metadados = _dividir_chunks(documentos)
 
-    if not documentos:
-        return {
-            "status": "vazio",
-            "total_chunks": 0,
-            "collection": _COLLECTION,
-        }
+    # Gerar IDs únicos para cada chunk
+    ids = [f"chunk_{i:04d}" for i in range(len(textos))]
 
-    coll.add(documents=documentos, metadatas=metadados, ids=ids)
-    return {
-        "status": "indexado",
-        "total_chunks": len(documentos),
-        "collection": _COLLECTION,
-        "fontes": sorted({m["fonte"] for m in metadados}),
-    }
+    # Indexar no ChromaDB em lotes de 100
+    LOTE = 100
+    for inicio in range(0, len(textos), LOTE):
+        fim = min(inicio + LOTE, len(textos))
+        colecao.add(
+            documents=textos[inicio:fim],
+            metadatas=metadados[inicio:fim],
+            ids=ids[inicio:fim]
+        )
+        print(f"[indexer] Indexado lote {inicio}–{fim} de {len(textos)}")
+
+    print(f"[indexer] Concluído — {len(textos)} chunks indexados em {CHROMA_DIR}")
+    return len(textos)

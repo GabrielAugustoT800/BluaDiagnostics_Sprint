@@ -1,81 +1,90 @@
-"""Safety Layer — auditor LLM-as-a-judge que aprova/reprova a resposta candidata.
-
-Segunda barreira que verifica: respeito à regra inegociável (sem
-diagnóstico definitivo, sem prescrição), presença de disclaimer,
-escalada SAMU 192 em red flag, e resistência a jailbreaks. Em falha de
-parse, fail closed (reprova) — em saúde, paranoia compensa.
+"""
+Safety Layer - Validador
+Valida respostas dos agentes antes de entregar ao usuário.
+Detecta red flags não tratadas, jailbreak e conteúdo fora de escopo.
 """
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-from typing import Any
+import re
 
-from src.llm.qwen_client import chat
+# Termos que indicam red flag cardiovascular não tratada
+_RED_FLAGS_KEYWORDS = [
+    "dor no peito", "dor torácica", "infarto", "avc", "acidente vascular",
+    "parada cardíaca", "desmaiei", "desmaio", "síncope", "falta de ar súbita",
+    "pressão 18", "pressão 19", "irradiando para o braço",
+]
 
-_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+# Termos que indicam possível diagnóstico definitivo indevido
+_DIAGNOSTICO_DEFINITIVO = [
+    "você tem ", "o diagnóstico é ", "confirmado que é ",
+    "certamente é ", "definitivamente é ",
+]
+
+# Disclaimer obrigatório
+_DISCLAIMER = "\n\n⚕️ *Este assistente oferece suporte informativo e não substitui avaliação médica. Em emergência, ligue 192 (SAMU).*"
 
 
-def _carregar_prompts() -> str:
-    principal = (_PROMPTS_DIR / "system_prompt.md").read_text(encoding="utf-8")
-    sub = (_PROMPTS_DIR / "agente_safety.md").read_text(encoding="utf-8")
-    return f"{principal}\n\n---\n\n{sub}"
+def agente_safety(
+    mensagem_usuario: str,
+    resposta_agente: str,
+    intent: str,
+) -> dict:
+    """
+    Valida a resposta do agente antes de entregar ao usuário.
 
+    Verificações:
+    1. Red flag na mensagem do usuário sem escalada na resposta
+    2. Diagnóstico definitivo indevido na resposta
+    3. Disclaimer obrigatório presente
 
-def auditar_resposta(
-    pergunta_usuario: str,
-    resposta_candidata: str,
-    intent_classificada: str,
-    red_flag_detectada: bool = False,
-    agente_origem: str | None = None,
-    backend: str = "dashscope",
-) -> dict[str, Any]:
-    """Audita uma resposta candidata contra os critérios de segurança.
+    Args:
+        mensagem_usuario: Mensagem original do usuário.
+        resposta_agente: Resposta gerada pelo agente especializado.
+        intent: Intent classificada pelo roteador.
 
     Returns:
-        Dict com ``aprovado: bool``, ``motivos_reprovacao: list``,
-        ``criterios_atendidos: list``, ``sugestao_correcao: str | None``.
+        Dicionário com resposta validada e flags de auditoria.
     """
-    system = _carregar_prompts()
+    flags = []
+    resposta_final = resposta_agente
 
-    user_prompt = (
-        "Audite a resposta a seguir contra os critérios.\n\n"
-        f"intent_classificada: {intent_classificada}\n"
-        f"red_flag_detectada: {red_flag_detectada}\n"
-        f"agente_origem: {agente_origem or 'desconhecido'}\n\n"
-        f"## Pergunta do usuário\n{pergunta_usuario}\n\n"
-        f"## Resposta candidata\n{resposta_candidata}\n\n"
-        "Devolva APENAS o JSON conforme o esquema do prompt."
+    mensagem_lower = mensagem_usuario.lower()
+    resposta_lower = resposta_agente.lower()
+
+    # Verificação 1 — Red flag sem escalada
+    red_flag_detectada = any(kw in mensagem_lower for kw in _RED_FLAGS_KEYWORDS)
+    escalada_presente = any(
+        termo in resposta_lower
+        for termo in ["192", "samu", "pronto-socorro", "emergência"]
     )
 
-    # temperature=0.0 para que a mesma entrada produza sempre a mesma decisão.
-    resposta = chat(
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_prompt},
-        ],
-        enable_thinking=False,
-        temperature=0.0,
-        response_format={"type": "json_object"},
-        backend=backend,  # type: ignore[arg-type]
+    if red_flag_detectada and not escalada_presente and intent == "triagem":
+        flags.append("RED_FLAG_SEM_ESCALADA")
+        # Adicionar instrução de segurança no início
+        resposta_final = (
+            "⚠️ Os sintomas que você descreveu podem indicar uma situação de urgência cardiovascular. "
+            "Se a situação piorar, ligue imediatamente para **192 (SAMU)**.\n\n"
+            + resposta_final
+        )
+
+    # Verificação 2 — Diagnóstico definitivo indevido
+    diagnostico_indevido = any(
+        termo in resposta_lower for termo in _DIAGNOSTICO_DEFINITIVO
     )
+    if diagnostico_indevido:
+        flags.append("DIAGNOSTICO_DEFINITIVO_DETECTADO")
 
-    try:
-        parsed = json.loads(resposta["content"])
-    except json.JSONDecodeError:
-        # Em caso de erro de parsing, reprovamos por segurança
-        parsed = {
-            "aprovado": False,
-            "motivos_reprovacao": ["Falha ao parsear resposta do Safety Layer."],
-            "criterios_atendidos": [],
-            "sugestao_correcao": "Reescrever a resposta em PT-BR claro com disclaimer.",
-        }
+    # Verificação 3 — Disclaimer obrigatório
+    disclaimer_presente = "não substitui" in resposta_lower or "samu" in resposta_lower
+    if not disclaimer_presente:
+        resposta_final += _DISCLAIMER
+        flags.append("DISCLAIMER_ADICIONADO")
 
-    # Valida shape mínimo
-    parsed.setdefault("aprovado", False)
-    parsed.setdefault("motivos_reprovacao", [])
-    parsed.setdefault("criterios_atendidos", [])
-    parsed.setdefault("sugestao_correcao", None)
-
-    return parsed
+    return {
+        "resposta": resposta_final,
+        "flags": flags,
+        "red_flag_detectada": red_flag_detectada,
+        "aprovado": "RED_FLAG_SEM_ESCALADA" not in flags
+                    and "DIAGNOSTICO_DEFINITIVO_DETECTADO" not in flags,
+    }

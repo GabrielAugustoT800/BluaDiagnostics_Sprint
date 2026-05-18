@@ -1,13 +1,24 @@
+<!--
+  README.md — BluaDiagnostics
+  Care Plus | Plataforma Blua
+  Sprint 1 — PoC Acadêmica FIAP
+  Versão: 1.0.0 | 2026-05-15
+-->
+
 # BluaDiagnostics
 
-> **Assistente clínico digital da Care Plus** — chatbot multi-agente em
-> Português Brasileiro nativo, integrado ao app Blua, que apoia triagem
-> conversacional de sintomas e prescrição remota assistida (sempre com
-> aprovação médica humana). Sprint 1 de PoC acadêmica FIAP.
+> **Assistente clínico digital especializado em saúde cardiovascular**
+> da Care Plus — chatbot multi-agente em Português Brasileiro nativo,
+> integrado ao app Blua, que conduz check-up digital conversacional,
+> analisa ritmo cardíaco via modelo de Machine Learning e apoia
+> prescrição remota assistida (sempre com aprovação médica humana).
+> Sprint 1 de PoC acadêmica FIAP.
 >
 > **Projeto Colab-first**: o ponto de entrada canônico é o notebook
-> [`notebooks/sprint1_poc.ipynb`](notebooks/sprint1_poc.ipynb), executado no
-> Google Colab.
+> [`notebooks/sprint1_poc.ipynb`](notebooks/sprint1_poc.ipynb),
+> executado no Google Colab.
+
+---
 
 ## Integrantes
 
@@ -17,21 +28,38 @@
 - Lucas Koiti Uyeno de Souza — RM 568128
 - Lucas Morio Ikeda — RM 567616
 
+---
+
 ## Persona escolhida e justificativa
 
-**Persona principal**: beneficiário Care Plus em autoavaliação (paciente
-leigo). É o público mais sensível e com maior volume — qualquer ganho de
-qualidade na triagem reduz custo, salva vidas e melhora o NPS do app
-Blua. A arquitetura é **dual-persona-ready**: o Agente de Prescrição
-atende secundariamente o médico Care Plus pós-teleconsulta, organizando
-histórico e validando interações como rascunho aguardando assinatura.
+**Persona principal**: beneficiário Care Plus em autoavaliação —
+paciente leigo realizando check-up digital cardiovascular ou
+triagem de sintomas cardíacos.
 
-A Care Plus tem mais de 600 mil beneficiários no Brasil, do grupo
-internacional Bupa. Hoje o app Blua é majoritariamente reativo. O
-BluaDiagnostics transforma o app numa plataforma proativa de cuidado,
-reduzindo barreiras de acesso à teleconsulta e detectando red flags
-clínicas precocemente — sempre respeitando a regra inegociável de **não
-substituir o médico**.
+**Foco clínico**: saúde cardiovascular e sistema circulatório
+exclusivamente. Qualquer condição fora desse escopo é
+redirecionada para o canal adequado da Care Plus.
+
+**Justificativa da persona:**
+
+A Care Plus possui mais de 600 mil beneficiários no Brasil.
+Doenças cardiovasculares são a principal causa de morte no país
+(SBC, 2025). O beneficiário leigo em autoavaliação é o público
+de maior volume e maior risco — um check-up digital cardiovascular
+bem conduzido reduz tempo de diagnóstico, previne eventos agudos
+e melhora o NPS do app Blua.
+
+**Justificativa do foco cardiovascular:**
+
+A especialização foi uma decisão técnica e de segurança. Um
+agente especializado em cardiovascular tem base de conhecimento
+mais precisa, guardrails mais objetivos e menor risco de
+alucinação clínica do que um agente generalista. Além disso,
+integra diretamente o modelo de Machine Learning de detecção
+de arritmias desenvolvido pelo grupo — conectando dois trabalhos
+acadêmicos num sistema coeso.
+
+---
 
 ## Stack técnica
 
@@ -39,214 +67,168 @@ substituir o médico**.
 |---|---|
 | Ambiente de execução | **Google Colab** (Python 3.11, CPU runtime gratuito) |
 | LLM principal | Qwen (`qwen-plus` via DashScope International) |
-| SDK | `openai` Python (Qwen é OpenAI-compatible) + `qwen-agent` (uma demo) |
+| Modelo de ML | Detecção de arritmias por janela deslizante de IBI — integrado via tool `analisar_ritmo_cardiaco` |
+| SDK | `openai` Python (Qwen é OpenAI-compatible) + `qwen-agent` (demo) |
 | Orquestração multi-agente | LangGraph (`StateGraph` + `MemorySaver`) |
-| RAG utilitários | `langchain-text-splitters` (apenas o splitter) |
-| Vector DB | ChromaDB (persistência local em `/content/bluadiagnostics/chroma_db/`) |
-| Embeddings | `intfloat/multilingual-e5-large` via `sentence-transformers` |
-| Reranker | Interface pluggável (default desligado na PoC) |
+| RAG | `langchain-text-splitters` + ChromaDB + `intfloat/multilingual-e5-large` |
 | Memória curto prazo | LangGraph `MemorySaver` |
 | Memória longo prazo | JSON estruturado por `beneficiario_id` |
 | Validação | Pydantic v2 |
 | Logging estruturado | `structlog` (output JSON em `logs/`) |
-| Avaliação | LLM-as-a-judge com Qwen sobre 15 casos |
-| Diagramação | Mermaid + PNG exportado |
-| Segredos | **Google Colab Secrets** (preferencial) ou `python-dotenv` em local |
+| Avaliação | LLM-as-a-judge com Qwen — 15 casos cardiovasculares |
+| Segredos | **Google Colab Secrets** (preferencial) ou `python-dotenv` local |
+
+---
 
 ## Arquitetura
 
-A arquitetura completa está em [`docs/arquitetura.mermaid`](docs/arquitetura.mermaid)
-e renderizada em [`docs/arquitetura.png`](docs/arquitetura.png).
+Arquitetura completa em [`docs/arquitetura.mermaid`](docs/arquitetura.mermaid)
+e [`docs/arquitetura.png`](docs/arquitetura.png).
 
 ```mermaid
 flowchart TD
-    Usuario([Usuário Care Plus]) --> Roteador{Roteador<br/>thinking=OFF}
-    Roteador --> Checkup[Check-up<br/>thinking=OFF]
-    Roteador --> Triagem[Triagem<br/>thinking=ON]
-    Roteador --> Prescricao[Prescrição<br/>thinking=ON]
-    Checkup --> Tools[(Tools mockadas)]
-    Triagem --> RAG[(ChromaDB)]
+    Usuario([Beneficiário Care Plus]) --> Roteador{Roteador\nthinking=OFF}
+
+    Roteador --> Checkup[Agente de Check-up\nthinking=OFF]
+    Roteador --> Triagem[Agente de Triagem\nthinking=ON]
+    Roteador --> Suporte[Agente de Suporte Clínico\nthinking=ON]
+    Roteador --> ForaEscopo[Fora de Escopo\nRedireciona Care Plus]
+
+    Checkup --> ML[(analisar_ritmo_cardiaco\nModelo ML — IBI/BPM)]
+    Checkup --> Tools[(consultar_historico\nwearable)]
+
+    Triagem --> RAG[(ChromaDB\nBase cardiovascular SBC)]
     Triagem --> Tools
-    Prescricao --> RAG
-    Prescricao --> Tools
-    Tools --> Safety{Safety Layer}
+
+    Suporte --> RAG
+    Suporte --> Tools
+
+    ML --> Safety{Safety Layer\nRed flags cardio}
+    Tools --> Safety
     RAG --> Safety
-    Safety --> Audit[(Audit log<br/>structlog)]
+
+    Safety -->|Red flag| Escalada([SAMU 192\nou Teleconsulta urgente])
+    Safety -->|Fluxo normal| Audit[(Audit log\nstructlog JSON)]
     Audit --> Resposta([Resposta + disclaimer])
 ```
 
-Cinco nós principais: **Roteador → (Check-up | Triagem | Prescrição |
-Dúvida | Fora-de-escopo) → Safety Layer → Audit Log**, com `thread_id`
-preservando memória multi-turno.
+**Quatro agentes especializados**: Roteador → (Check-up |
+Triagem | Suporte Clínico | Fora-de-escopo) → Safety Layer
+→ Audit Log, com `thread_id` preservando memória multi-turno.
 
-## Comparação de modelos: Qwen vs Llama 3.3
+**Diferencial**: o Agente de Check-up integra o modelo de ML
+de detecção de arritmias via tool `analisar_ritmo_cardiaco`,
+recebendo 6 atributos calculados a partir do IBI e retornando
+classificação `regular` ou `irregular`.
 
-Detalhes em [`docs/decisao_modelo.md`](docs/decisao_modelo.md). Resumo:
+---
 
-| Critério | Qwen (escolhido) | Llama 3.3 70B |
+## Comparação de modelos: Qwen vs Llama 3.3 70B
+
+Detalhes completos em [`docs/decisao_modelo.md`](docs/decisao_modelo.md).
+
+### Critérios obrigatórios
+
+| Critério | Qwen qwen-plus (escolhido) | Llama 3.3 70B |
 |---|---|---|
-| Lançamento | 2025–2026 | dez/2024 |
-| PT-BR clínico | nativo, 201 idiomas | bom, sem foco médico |
-| Function calling | nativo OpenAI-compatible | suportado, mais reescrita |
-| IFBench | 76,5 | ~71 |
-| Licença | **Apache 2.0** | Llama Community License (restrições) |
-| Hybrid thinking mode | **sim, toggle por chamada** | não |
-| Contexto | até 1M | 128K |
-| Arquitetura | dense + MoE 35B-A3B | dense 70B |
-| Disponibilidade Colab | DashScope (cloud) — funciona em CPU runtime | exige GPU robusta on-prem |
-| Frameworks de agente | `qwen-agent` oficial + LangGraph | LangGraph |
+| **Latência** | ~800ms via DashScope cloud | >60s em CPU — GPU T4 necessária |
+| **Custo** | Gratuito — 1M tokens/90 dias free trial DashScope | Gratuito — mas exige GPU paga no Colab ou Groq com risco LGPD |
+| **Privacidade / LGPD** | Dado transita pelo DashScope Internacional. Mitigação: modo Ollama on-prem disponível | Groq: dado transita fora do Brasil. On-prem: resolve LGPD mas inviável no Colab gratuito |
+| **Qualidade clínica** | IFBench 76,5 — instruction following superior, PT-BR nativo, 201 idiomas | IFBench ~71 — bom, sem foco clínico em português |
 
-**Cinco motivos para Qwen**:
+### Critérios técnicos adicionais
 
-1. **Instruction following (IFBench 76,5)** — crítico para guardrails
-   clínicos respeitarem a regra inegociável.
-2. **PT-BR nativo de qualidade clínica** — reduz alucinação terminológica
-   em bulas e protocolos.
-3. **Hybrid thinking mode** — toggle por agente sem trocar de modelo.
-4. **Licença Apache 2.0** — sem restrições comerciais.
-5. **Compatível com Colab** — toda inferência roda em cloud (DashScope), o
-   notebook não precisa de GPU paga.
+| Critério | Qwen | Llama 3.3 70B |
+|---|---|---|
+| Lançamento | 2025–2026 | Dez/2024 |
+| Function calling | Nativo OpenAI-compatible | Suportado, mais reescrita |
+| Hybrid thinking mode | Sim — toggle por agente | Não |
+| Contexto | Até 1M tokens | 128K tokens |
+| Licença | Apache 2.0 | Llama Community License |
+| Disponibilidade Colab CPU | Sim — inferência em cloud | Não — exige GPU |
+
+### Decisão: Qwen
+
+1. **Instruction following (IFBench 76,5)** — crítico para
+   guardrails clínicos respeitarem restrições invioláveis.
+2. **PT-BR nativo** — reduz alucinação terminológica em bulas
+   e protocolos da SBC.
+3. **Hybrid thinking mode** — `thinking=ON` nos agentes de
+   triagem e suporte, `thinking=OFF` no roteador.
+4. **Compatível com Colab CPU** — inferência em cloud sem GPU.
+5. **Apache 2.0** — sem restrições comerciais.
+
+**Risco LGPD documentado**: dados transitam pelo DashScope
+Internacional. Mitigação na Sprint 1: dados mockados sem PII
+real. Mitigação no projeto final: modo Ollama on-prem com
+Qwen 14B+ rodando em servidor local.
+
+---
 
 ## Modos de deployment
 
-Detalhes em [`docs/deployment_modes.md`](docs/deployment_modes.md).
-
 | Modo | Quando usar | Backend |
 |---|---|---|
-| **A — Cloud DashScope** (padrão Colab) | PoC, homologação, primeira fase de produção | `qwen-plus` em `dashscope-intl.aliyuncs.com` |
-| **B — On-prem Ollama** (fora do Colab) | clientes com isolamento total, contingência | `qwen:9b` em `localhost:11434` |
+| **A — Cloud DashScope** (padrão Colab) | Sprint 1 — PoC | `qwen-plus` em `dashscope-intl.aliyuncs.com` |
+| **B — On-prem Ollama** (projeto final) | Isolamento total, LGPD, produção | `qwen:14b` em `localhost:11434` |
 
-Troca via parâmetro: `chat(..., backend="dashscope" or "ollama")`. **No Colab,
-use sempre `dashscope`** — o Ollama exige um servidor local, indisponível
-no runtime do Colab por padrão.
+Troca via parâmetro: `chat(..., backend="dashscope" or "ollama")`.
+**No Colab, use sempre `dashscope`**.
+
+---
 
 ## Mapeamento de riscos clínicos e LGPD
 
-| Risco | Origem | Mitigação no BluaDiagnostics |
+| Risco | Origem | Mitigação |
 |---|---|---|
-| Alucinação clínica | LLM gera fato falso | RAG com KB curada (7 docs) + Safety Layer + disclaimer obrigatório |
-| Viés algorítmico | Treino do modelo | Lógica determinística de risco em `classificar_risco_clinico`; auditoria periódica |
-| LGPD art. 7º/11/18 (dado sensível de saúde) | Tratamento de dado clínico | Consentimento explícito no app, dados em território nacional, DPO formal, direitos de acesso/portabilidade/exclusão |
-| Responsabilidade sobre prescrição (CFM Res. 2.314/22) | Prescrição digital | Agente nunca emite receita final; tag `[RASCUNHO_AGUARDANDO_REVISAO_MEDICA]`; assinatura ICP-Brasil pelo médico |
-| Atrasar atendimento de emergência | Triagem digital lenta | Detecção de red flag → escalada SAMU 192 imediata, sem coleta extra |
-| Dependência emocional | Usuário substitui suporte humano | Mensagens recorrentes oferecendo "Atendente humano"; encaminhamento ativo em ideação suicida (CVV 188) |
-| Overtrust do usuário | Confiança excessiva no bot | Disclaimer obrigatório em toda resposta; linguagem probabilística; recusa de fechamento de diagnóstico |
+| Alucinação clínica | LLM gera fato falso sobre condição cardiovascular | RAG com KB cardiovascular curada + Safety Layer + disclaimer obrigatório |
+| Viés algorítmico | Treino do modelo com dados não representativos | Lógica determinística em `classificar_risco_clinico`; auditoria periódica |
+| LGPD art. 7º/11/18 | Dado clínico em cloud | Dados mockados na Sprint 1; Ollama on-prem no projeto final |
+| Responsabilidade sobre prescrição (CFM Res. 2.314/22) | Conduta farmacológica sem médico | Agente nunca emite receita; tag `[RASCUNHO_AGUARDANDO_REVISAO_MEDICA]`; aprovação médica obrigatória |
+| Atrasar emergência | Triagem digital substituindo SAMU | Red flag → SAMU 192 imediato, sem coleta adicional |
+| Overtrust | Confiança excessiva no assistente | Disclaimer obrigatório; linguagem probabilística; recusa de diagnóstico |
+| Jailbreak por autoridade | Usuário alega ser médico | Restrição independente de autodeclaração — escopo não muda |
+
+---
 
 ## Como rodar a PoC no Google Colab
 
 ### Pré-requisitos
 
-- Conta Google (para o Colab).
-- Chave **DashScope International** (<https://bailian.console.alibabacloud.com>)
-  com o **Model Studio** ativado (1 milhão de tokens grátis por 90 dias).
-- Repositório do projeto disponível no GitHub (próprio fork) **ou** o `.zip`
-  da pasta `bluadiagnostics/` para upload manual.
+- Conta Google.
+- Chave **DashScope International**
+  (<https://bailian.console.alibabacloud.com>) com **Model
+  Studio** ativado (1 milhão de tokens grátis por 90 dias).
+- Repositório disponível no GitHub ou `.zip` para upload.
 
-### Passo-a-passo
+### Passo a passo
 
-1. **Suba o projeto ao Colab** — duas opções:
-   - **GitHub** (recomendado): no notebook, edite a constante `REPO_URL` na
-     Seção 1.1 e a célula faz `git clone` automaticamente em
-     `/content/bluadiagnostics`.
-   - **Upload manual**: comprima a pasta `bluadiagnostics/` em `.zip`, suba
-     pela aba **Arquivos** do Colab e descompacte com
-     `!unzip bluadiagnostics.zip -d /content/`.
+1. **Suba o projeto ao Colab**:
+   - **GitHub**: edite `REPO_URL` na Seção 1.1 do notebook.
+   - **Upload manual**: `!unzip bluadiagnostics.zip -d /content/`
+
 2. **Configure o Colab Secret**:
-   - Ícone de **chave** (🔑) na barra lateral esquerda do Colab.
-   - **+ Add new secret** → Name: `DASHSCOPE_API_KEY` → Value: sua chave
-     (do **Bailian Console**).
-   - Habilite o toggle **Notebook access**.
-3. **Abra `notebooks/sprint1_poc.ipynb`** no Colab e execute as células em
-   ordem (`Runtime → Run all` funciona):
-   - **Seção 1**: clona o repo (se necessário), instala deps (~3 min) e
-     carrega o secret. Não exige GPU — Qwen roda em cloud.
-   - **Seção 2**: baixa `intfloat/multilingual-e5-large` (~1 GB) e indexa
-     a KB (~30 s).
-   - **Seções 3–6**: validam tools, wrapper Qwen e o grafo LangGraph.
-   - **Seções 7–12**: 6 demos clínicas (happy path, multi-turno, red flag,
-     tool, safety, qwen-agent).
-   - **Seção 13**: roda o eval set (15 casos) com Qwen como juiz e renderiza
-     o relatório.
+   - Ícone 🔑 → **+ Add new secret**
+   - Name: `DASHSCOPE_API_KEY` | Value: sua chave
+   - Habilite **Notebook access**
 
-### Solução de problemas comuns no Colab
+3. **Execute `notebooks/sprint1_poc.ipynb`** em ordem:
+   - Seção 1: instala deps (~3 min), carrega secret
+   - Seção 2: baixa embeddings (~1 GB), indexa KB cardiovascular
+   - Seções 3–6: valida tools, Qwen wrapper e grafo LangGraph
+   - Seções 7–12: 6 demos clínicas cardiovasculares
+   - Seção 13: eval set (15 casos) com LLM-as-a-judge
+
+### Solução de problemas
 
 | Erro | Causa | Como resolver |
 |---|---|---|
-| `DASHSCOPE_API_KEY não encontrada` | Secret não configurado ou sem Notebook access | Reabra o painel 🔑 e habilite **Notebook access** no secret |
-| `403 AccessDenied.Unpurchased` | Conta DashScope sem free trial ativada | Ative o **Model Studio** em <https://bailian.console.alibabacloud.com/> |
-| `401 Unauthorized` | Chave inválida ou expirada | Gere nova chave no Bailian Console e atualize o Secret |
-| `ModuleNotFoundError` após restart | Runtime foi desconectado | Re-execute a Seção 1 (instalação de deps) |
-| `OSError: HTTP error... e5-large` | Cache de embeddings corrompido | `!rm -rf ~/.cache/huggingface` e re-execute a Seção 2 |
-| `429 quota` / `rate limit` | Free trial atingiu RPM | Aguarde alguns segundos ou divida a execução |
+| `DASHSCOPE_API_KEY não encontrada` | Secret sem Notebook access | Reabra 🔑 e habilite Notebook access |
+| `403 AccessDenied.Unpurchased` | Model Studio não ativado | Ative em bailian.console.alibabacloud.com |
+| `401 Unauthorized` | Chave inválida ou expirada | Gere nova chave no Bailian Console |
+| `ModuleNotFoundError` após restart | Runtime desconectado | Re-execute Seção 1 |
+| `429 quota / rate limit` | Free trial atingiu RPM | Aguarde alguns segundos |
 
-### Execução local (alternativa fora do Colab)
-
-Se preferir rodar fora do Colab — Linux/macOS/Windows com Python 3.11+:
-
-```bash
-git clone <repo> bluadiagnostics
-cd bluadiagnostics
-python -m venv .venv
-.venv\Scripts\activate          # Windows (PowerShell: .venv\Scripts\Activate.ps1)
-# source .venv/bin/activate     # Linux/macOS
-pip install -r requirements.txt
-cp .env.example .env             # edite com sua DASHSCOPE_API_KEY
-python main.py --smoke           # ping no LLM
-python main.py --once "Sinto dor lombar há dois dias."
-python -m evals.run_evals        # eval set
-```
-
-A CLI `main.py` reaproveita o mesmo módulo `colab_setup.py`, então funciona
-igual em ambos ambientes.
+---
 
 ## Estrutura de pastas
-
-```
-bluadiagnostics/
-├── README.md
-├── .gitignore
-├── requirements.txt          # deps Colab-friendly
-├── .env.example              # referência para uso local (Colab usa Secrets)
-├── colab_setup.py            # bootstrap idempotente para o notebook
-├── main.py                   # CLI fina (útil em local e em !python)
-├── docs/                     # arquitetura, decisão de modelo, deployment
-├── prompts/                  # system + 4 sub-prompts (.md)
-├── tools/                    # tools_spec.json (5 tools)
-├── knowledge_base/           # 7 documentos .md (PT-BR, 800–1500 palavras cada)
-├── evals/                    # eval set + runner LLM-as-a-judge
-├── notebooks/                # PoC interativa Colab (13 seções)
-├── data/mocks/               # 4 mocks JSON
-├── logs/                     # audit log estruturado (gitignored)
-├── ollama/                   # Modelfile + README on-prem (uso fora do Colab)
-└── src/
-    ├── llm/                  # qwen_client + ollama_client
-    ├── agents/               # router, checkup, triagem, prescricao, safety
-    ├── tools/                # 5 implementações Python
-    ├── rag/                  # indexer + retriever + reranker (interface)
-    ├── graph.py              # StateGraph LangGraph
-    └── audit_log.py          # logging JSON estruturado
-```
-
-## Roadmap das próximas sprints
-
-| Sprint | Entregas previstas |
-|---|---|
-| Sprint 2 | Integração com base de bulas oficial (ANVISA), reranker Qwen3-Reranker ativado, knowledge base expandida |
-| Sprint 3 | Piloto com 200 beneficiários reais, dashboard de qualidade clínica, integração com prontuário Care Plus |
-| Sprint 4 | Decisão entre cloud privada e on-prem definitivo, fine-tuning leve em protocolos Care Plus |
-| Sprint 5 | Rollout completo, com ambos backends em produção, monitoramento clínico contínuo |
-
-## Licença e disclaimers
-
-- Código sob **Apache 2.0**.
-- Conteúdo da knowledge base é **didático e original**, elaborado para
-  fins acadêmicos. Não substitui a bula oficial autorizada pela ANVISA
-  nem protocolos institucionais.
-- Mocks claramente identificáveis (sobrenome "Fictício", IDs
-  `BENEF-XXX`).
-- O sistema é **acadêmico e demonstrativo**. Em produção, exigiria
-  homologação clínica, parecer jurídico LGPD/CFM, certificação SBIS e
-  contrato de processamento de dados.
-- O assistente **nunca substitui** avaliação médica. Em emergência,
-  **ligue 192 (SAMU)** ou vá ao pronto-socorro mais próximo. Em crise
-  emocional, **ligue 188 (CVV)**.

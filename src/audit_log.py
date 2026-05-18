@@ -1,133 +1,169 @@
-"""Audit log estruturado em JSON — base de auditoria LGPD do BluaDiagnostics.
+"""
+Logging estruturado de cada turno clínico.
 
-A LGPD (art. 37/38) exige registro das operações de tratamento, e em
-saúde digital os dados são sensíveis (art. 5º, II). Cada turno gera um
-JSON em `logs/session_<uuid>.json` registrando quem, quando, input,
-intent, RAG chunks, tools, decisão do Safety Layer e resposta final.
-Em produção, o `structlog` permite redirecionar para ELK/Datadog/etc.
+Responsabilidades:
+- Registrar cada turno de conversa em JSON estruturado
+- Capturar agente ativo, intent, tools chamadas e flags de safety
+- Persistir em logs/audit.jsonl — uma linha JSON por turno
+- Garantir rastreabilidade para auditoria clínica
+
+Formato de saída (JSONL — uma linha por turno):
+{
+    "timestamp": "2026-05-15T10:32:00",
+    "beneficiario_id": "BENEF-001",
+    "intent": "checkup",
+    "agente_ativo": "checkup",
+    "mensagem_usuario": "...",
+    "resposta_agente": "...",
+    "tools_chamadas": [...],
+    "flags_safety": [...],
+    "aprovado": true
+}
 """
 
 from __future__ import annotations
 
 import json
-import logging
-import time
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-import structlog
-
-# Pasta de logs (gitignored)
-_LOG_DIR = Path(__file__).resolve().parents[1] / "logs"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
+# Diretório de logs — criado automaticamente se não existir
+_LOGS_DIR = Path(__file__).resolve().parents[1] / "logs"
+_AUDIT_FILE = _LOGS_DIR / "audit.jsonl"
 
 
-def _configurar_structlog() -> None:
-    """Configura structlog para emitir JSON na stdlib logger."""
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.JSONRenderer(ensure_ascii=False),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        cache_logger_on_first_use=True,
-    )
-
-
-_configurar_structlog()
-_logger = structlog.get_logger("bluadiagnostics.audit")
-
-
-class AuditLog:
-    """Acumula e persiste o registro de uma sessão BluaDiagnostics.
-
-    Uso (consumido por `no_audit` em graph.py):
-
-        log = AuditLog(beneficiario_id="BENEF-001")
-        log.set_input("dor lombar").set_intent("triagem_sintoma")
-        log.add_tool_call("classificar_risco", {...}, {...})
-        log.set_resposta("Sugiro consulta...").finalizar()
+def registrar_turno(
+    mensagem_usuario: str,
+    resposta_agente: str,
+    agente_ativo: str,
+    intent: str,
+    tools_chamadas: list[dict],
+    flags_safety: list[str],
+    beneficiario_id: str = "BENEF-001",
+) -> None:
     """
+    Registra um turno de conversa no audit log.
 
-    def __init__(self, beneficiario_id: str | None = None) -> None:
-        self.session_id = str(uuid.uuid4())
-        self.beneficiario_id = beneficiario_id
-        self._inicio = time.time()
+    Args:
+        mensagem_usuario: Mensagem original do usuário.
+        resposta_agente: Resposta final entregue ao usuário.
+        agente_ativo: Nome do agente que processou o turno.
+        intent: Intent classificada pelo roteador.
+        tools_chamadas: Lista de tools invocadas no turno.
+        flags_safety: Flags levantadas pela safety layer.
+        beneficiario_id: ID do beneficiário da sessão.
+    """
+    # Garantir que o diretório de logs existe
+    _LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-        self.payload: dict[str, Any] = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "session_id": self.session_id,
-            "beneficiario_id": beneficiario_id,
-            "agente_ativo": None,
-            "input_usuario": None,
-            "intent_classificada": None,
-            "rag_chunks_recuperados": [],
-            "tools_invocadas": [],
-            "classificacao_risco": {},
-            "thinking_mode_usado": False,
-            "safety_layer_passou": True,
-            "safety_layer_motivo": None,
-            "resposta_final": None,
-            "tempo_total_ms": 0,
-        }
+    registro = {
+        "timestamp": datetime.now().isoformat(),
+        "beneficiario_id": beneficiario_id,
+        "intent": intent,
+        "agente_ativo": agente_ativo,
+        "mensagem_usuario": mensagem_usuario,
+        "resposta_agente": resposta_agente,
+        "tools_chamadas": [
+            {"tool": t["tool"]} for t in tools_chamadas
+        ],
+        "flags_safety": flags_safety,
+        "aprovado": len([
+            f for f in flags_safety
+            if f in {"RED_FLAG_SEM_ESCALADA", "DIAGNOSTICO_DEFINITIVO_DETECTADO"}
+        ]) == 0,
+    }
 
-    # --- API encadeável usada pelos nós do grafo ---
-    def set_input(self, texto: str) -> "AuditLog":
-        self.payload["input_usuario"] = texto
-        return self
+    # Append no arquivo JSONL — uma linha por turno
+    with open(_AUDIT_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
-    def set_intent(self, intent: str) -> "AuditLog":
-        self.payload["intent_classificada"] = intent
-        return self
 
-    def set_agente(self, nome: str) -> "AuditLog":
-        self.payload["agente_ativo"] = nome
-        return self
+def ler_audit_log(ultimos_n: int = 10) -> list[dict]:
+    """
+    Lê os últimos N registros do audit log.
+    Útil para debug e demonstração no notebook.
 
-    def add_rag_chunk(self, fonte: str, score: float) -> "AuditLog":
-        self.payload["rag_chunks_recuperados"].append({"fonte": fonte, "score": score})
-        return self
+    Args:
+        ultimos_n: Quantidade de registros a retornar.
 
-    def add_tool_call(self, nome: str, entrada: dict, saida: dict) -> "AuditLog":
-        self.payload["tools_invocadas"].append(
-            {"nome": nome, "input": entrada, "output": saida}
-        )
-        return self
+    Returns:
+        Lista de registros em ordem cronológica inversa.
+    """
+    if not _AUDIT_FILE.exists():
+        return []
 
-    def set_classificacao_risco(self, classificacao: dict) -> "AuditLog":
-        self.payload["classificacao_risco"] = classificacao
-        return self
+    linhas = _AUDIT_FILE.read_text(encoding="utf-8").strip().splitlines()
 
-    def set_thinking(self, usado: bool) -> "AuditLog":
-        self.payload["thinking_mode_usado"] = usado
-        return self
+    registros = []
+    for linha in linhas:
+        try:
+            registros.append(json.loads(linha))
+        except json.JSONDecodeError:
+            continue
 
-    def set_safety(self, passou: bool, motivo: str | None = None) -> "AuditLog":
-        self.payload["safety_layer_passou"] = passou
-        self.payload["safety_layer_motivo"] = motivo
-        return self
+    return list(reversed(registros[-ultimos_n:]))
 
-    def set_resposta(self, texto: str) -> "AuditLog":
-        self.payload["resposta_final"] = texto
-        return self
 
-    # --- persistência ---
-    def finalizar(self) -> dict[str, Any]:
-        """Grava o JSON em disco e emite no logger estruturado.
+def resumo_sessao(beneficiario_id: str | None = None) -> dict:
+    """
+    Gera resumo estatístico do audit log.
+    Útil para a seção de avaliação do notebook.
 
-        Arquivo é prático em dev; logger structlog facilita coleta por
-        agregador em produção.
-        """
-        self.payload["tempo_total_ms"] = int((time.time() - self._inicio) * 1000)
-        arquivo = _LOG_DIR / f"session_{self.session_id}.json"
-        with arquivo.open("w", encoding="utf-8") as fp:
-            json.dump(self.payload, fp, ensure_ascii=False, indent=2)
-        _logger.info("audit_log_finalizado", **self.payload)
-        return self.payload
+    Args:
+        beneficiario_id: Filtrar por beneficiário. None retorna todos.
 
-    def caminho_arquivo(self) -> Path:
-        return _LOG_DIR / f"session_{self.session_id}.json"
+    Returns:
+        Dicionário com estatísticas da sessão.
+    """
+    if not _AUDIT_FILE.exists():
+        return {"total_turnos": 0}
+
+    linhas = _AUDIT_FILE.read_text(encoding="utf-8").strip().splitlines()
+    registros = []
+
+    for linha in linhas:
+        try:
+            r = json.loads(linha)
+            if beneficiario_id is None or r.get("beneficiario_id") == beneficiario_id:
+                registros.append(r)
+        except json.JSONDecodeError:
+            continue
+
+    if not registros:
+        return {"total_turnos": 0}
+
+    # Contagem por intent
+    intents = {}
+    for r in registros:
+        intent = r.get("intent", "desconhecido")
+        intents[intent] = intents.get(intent, 0) + 1
+
+    # Contagem por agente
+    agentes = {}
+    for r in registros:
+        agente = r.get("agente_ativo", "desconhecido")
+        agentes[agente] = agentes.get(agente, 0) + 1
+
+    # Tools mais chamadas
+    tools_count = {}
+    for r in registros:
+        for t in r.get("tools_chamadas", []):
+            nome = t.get("tool", "desconhecida")
+            tools_count[nome] = tools_count.get(nome, 0) + 1
+
+    # Flags de safety
+    todas_flags = []
+    for r in registros:
+        todas_flags.extend(r.get("flags_safety", []))
+
+    return {
+        "total_turnos": len(registros),
+        "turnos_aprovados": sum(1 for r in registros if r.get("aprovado", True)),
+        "distribuicao_intents": intents,
+        "distribuicao_agentes": agentes,
+        "tools_mais_chamadas": tools_count,
+        "total_flags_safety": len(todas_flags),
+        "flags_por_tipo": {
+            f: todas_flags.count(f) for f in set(todas_flags)
+        },
+    }

@@ -1,67 +1,98 @@
-"""Retrieval semântico sobre o ChromaDB com filtro opcional por metadado.
+"""
+Responsabilidades:
+- Receber query do agente
+- Buscar chunks relevantes na coleção ChromaDB
+- Retornar contexto formatado para injeção no prompt
 
-Converte distância cosseno em score (1 - dist) para leitura mais
-intuitiva: 1.0 = idêntico, 0.0 = totalmente diferente.
+Uso:
+    from src.rag import recuperar_contexto
+    contexto = recuperar_contexto("sintomas de infarto", n_resultados=3)
 """
 
 from __future__ import annotations
 
-from typing import Any
+import os
+from pathlib import Path
 
-from src.rag.indexer import get_collection
-from src.rag.reranker import RerankerConfig, rerank
+from chromadb import PersistentClient
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+
+from .indexer import CHROMA_DIR, COLECAO_NOME, MODELO_EMBEDDINGS
+
+# Número padrão de chunks a recuperar por query
+N_RESULTADOS_PADRAO = 3
+
+# Distância máxima aceitável — chunks muito distantes são descartados
+# ChromaDB usa distância coseno: 0 = idêntico, 2 = oposto
+DISTANCIA_MAXIMA = 1.2
 
 
-def recuperar_chunks(
+def recuperar_contexto(
     query: str,
-    top_k: int = 4,
-    filtro_tipo: str | list[str] | None = None,
-    reranker_config: RerankerConfig | None = None,
-) -> list[dict[str, Any]]:
-    """Recupera os top-k chunks mais relevantes para a query.
+    n_resultados: int = N_RESULTADOS_PADRAO,
+    filtro_fonte: str | None = None,
+) -> str:
+    """
+    Recupera contexto clínico cardiovascular relevante para a query.
 
     Args:
-        query: pergunta ou contexto a buscar.
-        top_k: número de chunks a retornar.
-        filtro_tipo: opcional — restringe por tipo (ex: "red_flag",
-            "bula"). Aceita string única ou lista para OR semântico.
-        reranker_config: se fornecido, aplica reranker ao resultado.
+        query: Pergunta ou contexto do agente para busca semântica.
+        n_resultados: Número de chunks a recuperar.
+        filtro_fonte: Filtrar por documento específico. Ex: 'red_flags_cardiovasculares.md'
 
     Returns:
-        Lista de dicionários com chaves: documento, fonte, tipo, score, chunk_id.
+        String formatada com os chunks relevantes para injeção no prompt.
+        Retorna string vazia se nenhum resultado relevante for encontrado.
     """
-    coll = get_collection()
+    try:
+        cliente = PersistentClient(path=str(CHROMA_DIR))
 
-    where: dict[str, Any] | None = None
-    if isinstance(filtro_tipo, str):
-        where = {"tipo": filtro_tipo}
-    elif isinstance(filtro_tipo, list) and filtro_tipo:
-        where = {"tipo": {"$in": filtro_tipo}}
+        # Verificar se coleção existe
+        colecoes = [c.name for c in cliente.list_collections()]
+        if COLECAO_NOME not in colecoes:
+            print("[retriever] Aviso: knowledge base não indexada. "
+                  "Execute indexar_knowledge_base() primeiro.")
+            return ""
 
-    # Busca o dobro do top_k para dar margem ao reranker (quando ativado).
-    raw = coll.query(
-        query_texts=[query],
-        n_results=max(top_k * 2, top_k),
-        where=where,
-    )
-
-    documentos = raw.get("documents", [[]])[0]
-    metadados = raw.get("metadatas", [[]])[0]
-    distancias = raw.get("distances", [[]])[0]
-
-    chunks: list[dict[str, Any]] = []
-    for doc, meta, dist in zip(documentos, metadados, distancias):
-        chunks.append(
-            {
-                "documento": doc,
-                "fonte": meta.get("fonte"),
-                "tipo": meta.get("tipo"),
-                "chunk_id": meta.get("chunk_id"),
-                "score": round(1.0 - float(dist), 4),
-            }
+        embedding_fn = SentenceTransformerEmbeddingFunction(
+            model_name=MODELO_EMBEDDINGS
+        )
+        colecao = cliente.get_collection(
+            name=COLECAO_NOME,
+            embedding_function=embedding_fn
         )
 
-    if reranker_config and reranker_config.enabled:
-        chunks = rerank(query, chunks, config=reranker_config)
+        # Montar filtro por fonte se solicitado
+        where = {"fonte": filtro_fonte} if filtro_fonte else None
 
-    return chunks[:top_k]
+        # Busca semântica
+        resultados = colecao.query(
+            query_texts=[query],
+            n_results=n_resultados,
+            where=where,
+            include=["documents", "metadatas", "distances"]
+        )
+
+        # Filtrar por distância máxima e formatar
+        chunks_relevantes = []
+
+        for doc, meta, dist in zip(
+            resultados["documents"][0],
+            resultados["metadatas"][0],
+            resultados["distances"][0]
+        ):
+            if dist <= DISTANCIA_MAXIMA:
+                chunks_relevantes.append(
+                    f"[Fonte: {meta['titulo']}]\n{doc}"
+                )
+
+        if not chunks_relevantes:
+            return ""
+
+        # Formatar contexto para injeção no prompt
+        contexto = "\n\n---\n\n".join(chunks_relevantes)
+        return f"CONTEXTO CLÍNICO RELEVANTE:\n\n{contexto}"
+
+    except Exception as exc:
+        print(f"[retriever] Erro na busca: {type(exc).__name__}: {exc}")
+        return ""

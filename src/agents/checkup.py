@@ -1,87 +1,163 @@
-"""Agente Check-up — coleta estruturada de sintomas e sinais vitais.
-
-Primeiro contato com o paciente: monta um dossiê de queixas, idade,
-comorbidades e sinais vitais que depois alimenta a Triagem. Sem RAG,
-sem thinking, temperature 0.4 (conversa mais empática). Tools
-permitidas: `consultar_historico_paciente` e `consultar_sinais_vitais_wearable`.
+"""
+Agente de Check-up
+Conduz check-up cardiovascular conversacional.
+Chama tools: consultar_historico_paciente, analisar_ritmo_cardiaco,
+             consultar_sinais_vitais_wearable, agendar_teleconsulta.
+thinking=OFF — fluxo guiado e determinístico.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any
 
-from src.llm.qwen_client import chat
-from src.tools import TOOL_REGISTRY
+from src.llm.qwen_client import chat, formatar_mensagens
+from src.tools import (
+    consultar_historico_paciente,
+    analisar_ritmo_cardiaco,
+    consultar_sinais_vitais_wearable,
+    agendar_teleconsulta,
+)
+from src.rag import recuperar_contexto
 
-_PROMPTS_DIR = Path(__file__).resolve().parents[2] / "prompts"
+# Carregar tools_spec para enviar ao modelo
+_TOOLS_SPEC_PATH = Path(__file__).resolve().parents[2] / "tools" / "tools_spec.json"
+_TOOLS_SPEC = json.loads(_TOOLS_SPEC_PATH.read_text(encoding="utf-8"))
+
+# Filtrar apenas as tools relevantes para este agente
+_TOOLS_CHECKUP = [
+    t for t in _TOOLS_SPEC
+    if t["name"] in {
+        "consultar_historico_paciente",
+        "analisar_ritmo_cardiaco",
+        "consultar_sinais_vitais_wearable",
+        "agendar_teleconsulta",
+    }
+]
+
+SYSTEM_PROMPT_CHECKUP = """Você é o Agente de Check-up do BluaDiagnostics, assistente cardiovascular digital da Care Plus.
+
+PAPEL: Conduzir check-up cardiovascular conversacional guiado para o beneficiário.
+
+ESCOPO:
+- Coletar sintomas cardiovasculares e sinais vitais relatados
+- Consultar histórico cardiovascular do beneficiário
+- Analisar ritmo cardíaco quando dados de batimentos forem informados
+- Consultar leituras de wearable quando disponíveis
+- Agendar teleconsulta se necessário
+
+RESTRIÇÕES:
+- NUNCA emita diagnóstico definitivo — use "pode indicar", "sugere avaliação"
+- NUNCA prescreva ou sugira alteração de medicamento
+- Uma pergunta por vez — não sobrecarregue o beneficiário
+- Máximo 150 palavras por resposta
+
+FORMATO:
+- Tom acolhedor e linguagem acessível
+- Red flags sempre no início da resposta com linguagem urgente
+- Disclaimer obrigatório ao final: ⚕️ Este assistente não substitui avaliação médica.
+
+ESCALADA:
+- Red flag detectada → instrua SAMU 192 imediatamente
+- Ritmo irregular → agende teleconsulta urgente ou prioritária"""
 
 
-def _carregar_prompts() -> str:
-    """Concatena o system prompt global com o sub-prompt do agente."""
-    principal = (_PROMPTS_DIR / "system_prompt.md").read_text(encoding="utf-8")
-    sub = (_PROMPTS_DIR / "agente_checkup.md").read_text(encoding="utf-8")
-    return f"{principal}\n\n---\n\n{sub}"
+def _executar_tool(nome: str, argumentos: dict) -> str:
+    """Executa a tool solicitada e retorna resultado como string JSON."""
+    mapa = {
+        "consultar_historico_paciente": consultar_historico_paciente,
+        "analisar_ritmo_cardiaco": analisar_ritmo_cardiaco,
+        "consultar_sinais_vitais_wearable": consultar_sinais_vitais_wearable,
+        "agendar_teleconsulta": agendar_teleconsulta,
+    }
+
+    func = mapa.get(nome)
+    if not func:
+        return json.dumps({"erro": f"Tool '{nome}' não encontrada."})
+
+    try:
+        resultado = func(**argumentos)
+        return json.dumps(resultado, ensure_ascii=False)
+    except Exception as exc:
+        return json.dumps({"erro": str(exc)})
 
 
-def _tools_spec_para_qwen() -> list[dict[str, Any]]:
-    """Tools permitidas a este agente (least privilege)."""
-    import json
-    spec_path = Path(__file__).resolve().parents[2] / "tools" / "tools_spec.json"
-    todas = json.loads(spec_path.read_text(encoding="utf-8"))
-    nomes_permitidos = {"consultar_historico_paciente", "consultar_sinais_vitais_wearable"}
-    return [t for t in todas if t["function"]["name"] in nomes_permitidos]
-
-
-def executar_checkup(
-    mensagens: list[dict[str, Any]],
-    beneficiario_id: str | None = None,
-    backend: str = "dashscope",
-) -> dict[str, Any]:
-    """Executa um turno do agente de Check-up.
+def agente_checkup(
+    mensagem: str,
+    historico: list[dict],
+    beneficiario_id: str = "BENEF-001",
+) -> dict:
+    """
+    Executa o agente de check-up cardiovascular.
 
     Args:
-        mensagens: histórico do usuário no formato OpenAI ({role, content}).
-        beneficiario_id: se conhecido, é injetado como contexto.
-        backend: ``"dashscope"`` ou ``"ollama"``.
+        mensagem: Mensagem atual do usuário.
+        historico: Histórico de turnos anteriores.
+        beneficiario_id: ID do beneficiário mockado.
 
     Returns:
-        Dict com ``content`` (mensagem ao paciente), ``tool_calls`` (lista
-        de tool calls executadas com input/output), ``thinking`` (sempre None
-        neste agente — thinking desligado).
+        Dicionário com resposta final e metadados.
     """
-    system = _carregar_prompts()
-    if beneficiario_id:
-        system += f"\n\n## Contexto da sessão\n- beneficiario_id: {beneficiario_id}"
+    # Injetar contexto do beneficiário na mensagem do sistema
+    system = SYSTEM_PROMPT_CHECKUP + f"\n\nBENEFICIÁRIO ATIVO: {beneficiario_id}"
 
-    payload_msgs: list[dict[str, Any]] = [{"role": "system", "content": system}]
-    payload_msgs.extend(mensagens)
+    # Recuperar contexto RAG relevante
+    contexto_rag = recuperar_contexto(mensagem, n_resultados=2)
+    if contexto_rag:
+        system += f"\n\n{contexto_rag}"
 
+    mensagens = formatar_mensagens(system, historico, mensagem)
+
+    # Primeira chamada ao modelo
     resposta = chat(
-        messages=payload_msgs,
-        tools=_tools_spec_para_qwen(),
+        messages=mensagens,
+        tools=_TOOLS_CHECKUP,
         enable_thinking=False,
-        temperature=0.4,
-        backend=backend,  # type: ignore[arg-type]
+        temperature=0.3,
     )
 
-    # Executa as tools que o LLM pediu (o LLM só descreve a chamada;
-    # rodar a função Python correspondente é responsabilidade nossa).
-    tool_outputs: list[dict[str, Any]] = []
-    for tc in resposta["tool_calls"]:
-        nome = tc["name"]
-        if nome not in TOOL_REGISTRY:
-            continue
-        import json
-        try:
-            args = json.loads(tc["arguments"])
-        except json.JSONDecodeError:
-            args = {}
-        saida = TOOL_REGISTRY[nome](**args)
-        tool_outputs.append({"nome": nome, "input": args, "output": saida})
+    tools_chamadas = []
+
+    # Loop de tool calling
+    while resposta.get("tool_calls"):
+        for tc in resposta["tool_calls"]:
+            nome = tc["name"]
+            argumentos = json.loads(tc["arguments"])
+
+            print(f"[checkup] Chamando tool: {nome}({argumentos})")
+            resultado = _executar_tool(nome, argumentos)
+            tools_chamadas.append({"tool": nome, "resultado": resultado})
+
+            # Adicionar resultado da tool ao histórico da chamada
+            mensagens.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": nome,
+                        "arguments": tc["arguments"]
+                    }
+                }]
+            })
+            mensagens.append({
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": resultado
+            })
+
+        # Nova chamada com resultados das tools
+        resposta = chat(
+            messages=mensagens,
+            tools=_TOOLS_CHECKUP,
+            enable_thinking=False,
+            temperature=0.3,
+        )
 
     return {
-        "content": resposta["content"],
-        "tool_calls": tool_outputs,
-        "thinking": resposta["thinking"],
+        "resposta": resposta["content"],
+        "agente": "checkup",
+        "tools_chamadas": tools_chamadas,
+        "usage": resposta["usage"],
     }

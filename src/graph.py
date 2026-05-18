@@ -1,329 +1,307 @@
-"""Orquestração multi-agente do BluaDiagnostics via LangGraph.
+"""
+Grafo LangGraph orquestrando os agentes especializados.
+Versão: 1.0.0 | 2026-05-15
 
 Fluxo:
+    Usuario → Roteador → (Checkup | Triagem | Suporte | ForaEscopo)
+           → Safety Layer → Audit Log → Resposta
 
-    USUÁRIO → Roteador → (Checkup | Triagem | Prescricao | Duvida | ForaEscopo)
-                                       ↓
-                                    Safety
-                                       ↓
-                                    Audit
-                                       ↓
-                                   RESPOSTA
+Uso:
+    from src.graph import construir_grafo, executar_turno
 
-`EstadoBlua` é o estado tipado compartilhado entre nós (TypedDict
-para casar com a API de dict do LangGraph). `MemorySaver` mantém
-memória multi-turno por `thread_id`.
+    grafo = construir_grafo()
+    estado = executar_turno(grafo, "Quero fazer meu check-up", "thread-001")
+    print(estado["resposta_final"])
 """
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import TypedDict, Annotated
+import operator
 
+from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph
 
-from src.agents.checkup import executar_checkup
-from src.agents.prescricao import executar_prescricao
-from src.agents.router import classificar_intent
-from src.agents.safety import auditar_resposta
-from src.agents.triagem import executar_triagem
-from src.audit_log import AuditLog
-
-
-class EstadoBlua(TypedDict, total=False):
-    """Estado compartilhado entre os nós do grafo, serializável para MemorySaver."""
-
-    mensagens: list[dict[str, Any]]
-    beneficiario_id: str | None
-    intent_classificada: str | None
-    agente_ativo: str | None
-    dossie_queixas: dict[str, Any]
-    classificacao_risco: dict[str, Any] | None
-    rag_chunks: list[dict[str, Any]]
-    tools_invocadas: list[dict[str, Any]]
-    safety_aprovado: bool
-    safety_motivos: list[str]
-    resposta_final: str | None
-    audit_log: dict[str, Any]
-    backend: str  # "dashscope" ou "ollama"
-    medicacao_proposta: list[str] | None
+from src.agents import (
+    rotear,
+    agente_checkup,
+    agente_triagem,
+    agente_suporte_clinico,
+    agente_safety,
+)
+from src.audit_log import registrar_turno
 
 
-# ---------- Nós do grafo ----------
+# Estado do grafo
+
+class EstadoBlua(TypedDict):
+    """
+    Estado compartilhado entre todos os nós do grafo.
+    Cada campo é atualizado pelos nós conforme o fluxo avança.
+    """
+    # Entrada
+    mensagem_usuario: str
+    beneficiario_id: str
+
+    # Roteamento
+    intent_classificada: str
+    confianca_intent: float
+
+    # Histórico de conversa — acumulado via operador de adição
+    historico: Annotated[list[dict], operator.add]
+
+    # Resposta do agente especializado
+    resposta_agente: str
+    agente_ativo: str
+    tools_chamadas: list[dict]
+
+    # Safety
+    resposta_validada: str
+    flags_safety: list[str]
+    aprovado: bool
+
+    # Saída final
+    resposta_final: str
 
 
-def no_roteador(state: EstadoBlua) -> dict[str, Any]:
-    """Primeiro nó: classifica a intent da última mensagem e despacha."""
-    mensagens = state["mensagens"]
-    ultimo_usuario = next(
-        (m["content"] for m in reversed(mensagens) if m.get("role") == "user"),
-        "",
+# Nós do grafo
+
+def no_roteador(estado: EstadoBlua) -> dict:
+    """
+    Classifica a intenção do usuário e determina qual agente acionar.
+    """
+    resultado = rotear(
+        mensagem=estado["mensagem_usuario"],
+        historico=estado.get("historico", []),
     )
-    backend = state.get("backend", "dashscope")
-    classificacao = classificar_intent(
-        mensagem_usuario=ultimo_usuario,
-        historico=[m for m in mensagens if m.get("role") != "system"],
-        backend=backend,
-    )
+
+    print(f"[graph] Intent: {resultado['intent']} "
+          f"(confiança: {resultado['confianca']:.2f})")
+
     return {
-        "intent_classificada": classificacao["intent"],
-        "agente_ativo": "roteador",
+        "intent_classificada": resultado["intent"],
+        "confianca_intent": resultado["confianca"],
     }
 
 
-def no_checkup(state: EstadoBlua) -> dict[str, Any]:
-    backend = state.get("backend", "dashscope")
-    saida = executar_checkup(
-        mensagens=state["mensagens"],
-        beneficiario_id=state.get("beneficiario_id"),
-        backend=backend,
+def no_checkup(estado: EstadoBlua) -> dict:
+    """Executa o agente de check-up cardiovascular."""
+    resultado = agente_checkup(
+        mensagem=estado["mensagem_usuario"],
+        historico=estado.get("historico", []),
+        beneficiario_id=estado.get("beneficiario_id", "BENEF-001"),
     )
     return {
+        "resposta_agente": resultado["resposta"],
         "agente_ativo": "checkup",
-        "resposta_final": saida["content"],
-        "tools_invocadas": (state.get("tools_invocadas") or []) + saida["tool_calls"],
+        "tools_chamadas": resultado.get("tools_chamadas", []),
     }
 
 
-def no_triagem(state: EstadoBlua) -> dict[str, Any]:
-    """Nó da triagem — RAG + classificação de risco + recomendação."""
-    backend = state.get("backend", "dashscope")
-    saida = executar_triagem(
-        mensagens=state["mensagens"],
-        dossie_queixas=state.get("dossie_queixas") or {},
-        beneficiario_id=state.get("beneficiario_id"),
-        backend=backend,
+def no_triagem(estado: EstadoBlua) -> dict:
+    """Executa o agente de triagem cardiovascular."""
+    resultado = agente_triagem(
+        mensagem=estado["mensagem_usuario"],
+        historico=estado.get("historico", []),
+        beneficiario_id=estado.get("beneficiario_id", "BENEF-001"),
     )
-
-    # Promove o resultado da classificar_risco_clinico ao topo do estado
-    # para que outros nós (safety, audit) acessem direto.
-    classificacao = None
-    for tc in saida["tool_calls"]:
-        if tc["nome"] == "classificar_risco_clinico":
-            classificacao = tc["output"]
-            break
-
     return {
+        "resposta_agente": resultado["resposta"],
         "agente_ativo": "triagem",
-        "resposta_final": saida["content"],
-        "rag_chunks": saida["rag_chunks"],
-        "tools_invocadas": (state.get("tools_invocadas") or []) + saida["tool_calls"],
-        "classificacao_risco": classificacao,
+        "tools_chamadas": resultado.get("tools_chamadas", []),
     }
 
 
-def no_prescricao(state: EstadoBlua) -> dict[str, Any]:
-    backend = state.get("backend", "dashscope")
-    beneficiario_id = state.get("beneficiario_id") or "BENEF-DESCONHECIDO"
-    saida = executar_prescricao(
-        mensagens=state["mensagens"],
-        beneficiario_id=beneficiario_id,
-        medicacao_proposta=state.get("medicacao_proposta"),
-        backend=backend,
+def no_suporte(estado: EstadoBlua) -> dict:
+    """Executa o agente de suporte clínico cardiovascular."""
+    resultado = agente_suporte_clinico(
+        mensagem=estado["mensagem_usuario"],
+        historico=estado.get("historico", []),
+        beneficiario_id=estado.get("beneficiario_id", "BENEF-001"),
     )
     return {
-        "agente_ativo": "prescricao",
-        "resposta_final": saida["content"],
-        "rag_chunks": saida["rag_chunks"],
-        "tools_invocadas": (state.get("tools_invocadas") or []) + saida["tool_calls"],
+        "resposta_agente": resultado["resposta"],
+        "agente_ativo": "suporte_clinico",
+        "tools_chamadas": resultado.get("tools_chamadas", []),
     }
 
 
-def no_duvida_geral(state: EstadoBlua) -> dict[str, Any]:
-    """Atalho leve para perguntas educacionais sem necessidade de triagem."""
-    from src.llm.qwen_client import chat
-    from pathlib import Path
-
-    prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "system_prompt.md"
-    system = prompt_path.read_text(encoding="utf-8")
-    backend = state.get("backend", "dashscope")
-    resposta = chat(
-        messages=[{"role": "system", "content": system}] + state["mensagens"],
-        enable_thinking=False,
-        temperature=0.4,
-        backend=backend,  # type: ignore[arg-type]
+def no_fora_escopo(estado: EstadoBlua) -> dict:
+    """Responde quando a intent está fora do escopo cardiovascular."""
+    resposta = (
+        "Sou especializado em saúde cardiovascular e sistema circulatório — "
+        "esse tema está fora do meu escopo de atuação. "
+        "Para outros assuntos de saúde, recomendo contatar o canal de clínica "
+        "geral da Care Plus ou seu médico de referência. "
+        "Posso te ajudar com algo relacionado ao seu coração ou pressão arterial?"
+        "\n\n⚕️ *Este assistente não substitui avaliação médica. "
+        "Em emergência, ligue 192 (SAMU).*"
     )
     return {
-        "agente_ativo": "duvida_geral",
-        "resposta_final": resposta["content"],
-    }
-
-
-def no_fora_escopo(state: EstadoBlua) -> dict[str, Any]:
-    """Resposta padrão para pedidos fora do escopo clínico."""
-    mensagem = (
-        "Sou o assistente clínico digital da Care Plus e meu papel é apoiar "
-        "questões de saúde — triagem de sintomas, dúvidas sobre medicação "
-        "(de forma educacional), agendamento de teleconsulta e orientação "
-        "preventiva. Esse pedido sai do meu escopo, então preciso te "
-        "redirecionar. Posso ajudar com algo relacionado à sua saúde?"
-    )
-    return {
+        "resposta_agente": resposta,
         "agente_ativo": "fora_escopo",
-        "resposta_final": mensagem,
+        "tools_chamadas": [],
     }
 
 
-def no_safety(state: EstadoBlua) -> dict[str, Any]:
-    """Auditoria LLM-as-a-judge antes da resposta sair.
-
-    Em Sprint 1, reprovação só marca o estado e segue para audit. Em
-    sprints futuras, vai voltar ao agente original com instruções de
-    correção.
-    """
-    backend = state.get("backend", "dashscope")
-    mensagens = state["mensagens"]
-    ultimo_usuario = next(
-        (m["content"] for m in reversed(mensagens) if m.get("role") == "user"),
-        "",
-    )
-    classificacao = state.get("classificacao_risco") or {}
-    red_flag = bool(classificacao.get("red_flag_detectada"))
-
-    auditoria = auditar_resposta(
-        pergunta_usuario=ultimo_usuario,
-        resposta_candidata=state.get("resposta_final") or "",
-        intent_classificada=state.get("intent_classificada") or "desconhecida",
-        red_flag_detectada=red_flag,
-        agente_origem=state.get("agente_ativo"),
-        backend=backend,
+def no_safety(estado: EstadoBlua) -> dict:
+    """Valida a resposta do agente antes de entregar ao usuário."""
+    resultado = agente_safety(
+        mensagem_usuario=estado["mensagem_usuario"],
+        resposta_agente=estado["resposta_agente"],
+        intent=estado.get("intent_classificada", "checkup"),
     )
 
-    aprovado = bool(auditoria["aprovado"])
-    motivos = auditoria.get("motivos_reprovacao", [])
+    if resultado["flags"]:
+        print(f"[graph] Safety flags: {resultado['flags']}")
 
     return {
-        "safety_aprovado": aprovado,
-        "safety_motivos": motivos,
+        "resposta_validada": resultado["resposta"],
+        "flags_safety": resultado["flags"],
+        "aprovado": resultado["aprovado"],
     }
 
 
-def no_audit(state: EstadoBlua) -> dict[str, Any]:
-    """Persiste o audit log estruturado e finaliza o turno."""
-    log = AuditLog(beneficiario_id=state.get("beneficiario_id"))
-    mensagens = state["mensagens"]
-    ultimo_usuario = next(
-        (m["content"] for m in reversed(mensagens) if m.get("role") == "user"),
-        "",
-    )
-    log.set_input(ultimo_usuario)
-    log.set_intent(state.get("intent_classificada") or "desconhecida")
-    log.set_agente(state.get("agente_ativo") or "desconhecido")
-    for chunk in state.get("rag_chunks") or []:
-        log.add_rag_chunk(chunk.get("fonte", ""), chunk.get("score", 0.0))
-    for tc in state.get("tools_invocadas") or []:
-        log.add_tool_call(tc["nome"], tc.get("input", {}), tc.get("output", {}))
-    if state.get("classificacao_risco"):
-        log.set_classificacao_risco(state["classificacao_risco"])
-    log.set_thinking(state.get("agente_ativo") in {"triagem", "prescricao"})
-    log.set_safety(
-        passou=bool(state.get("safety_aprovado", True)),
-        motivo="; ".join(state.get("safety_motivos") or []) or None,
-    )
-    log.set_resposta(state.get("resposta_final") or "")
-    log.finalizar()
-
-    return {"audit_log": log.payload}
-
-
-# ---------- Routing condicional ----------
-
-
-def _rotear_intent(state: EstadoBlua) -> str:
-    """Roteamento condicional. Default `duvida_geral` em caso de incerteza —
-    caminho mais conservador que tentar adivinhar uma triagem clínica.
+def no_saida(estado: EstadoBlua) -> dict:
     """
-    intent = state.get("intent_classificada")
-    if intent == "checkup":
-        return "checkup"
-    if intent == "triagem_sintoma":
-        return "triagem"
-    if intent == "prescricao":
-        return "prescricao"
-    if intent == "fora_escopo":
-        return "fora_escopo"
-    return "duvida_geral"
-
-
-# ---------- Construção do grafo ----------
-
-
-def construir_grafo() -> Any:
-    """Monta o StateGraph com os 5 nós de resposta + safety + audit.
-
-        roteador  ─┬─→ checkup ────┐
-                   ├─→ triagem ────┤
-                   ├─→ prescricao ─┼─→ safety → audit → END
-                   ├─→ duvida ─────┤
-                   └─→ fora_escopo ┘
+    Finaliza o turno, atualiza histórico e registra no audit log.
     """
-    grafo = StateGraph(EstadoBlua)
+    resposta_final = estado["resposta_validada"]
 
-    grafo.add_node("roteador", no_roteador)
-    grafo.add_node("checkup", no_checkup)
-    grafo.add_node("triagem", no_triagem)
-    grafo.add_node("prescricao", no_prescricao)
-    grafo.add_node("duvida_geral", no_duvida_geral)
-    grafo.add_node("fora_escopo", no_fora_escopo)
-    grafo.add_node("safety", no_safety)
-    grafo.add_node("audit", no_audit)
+    # Atualizar histórico com o turno atual
+    novo_historico = [
+        {"role": "user", "content": estado["mensagem_usuario"]},
+        {"role": "assistant", "content": resposta_final},
+    ]
 
-    grafo.set_entry_point("roteador")
+    # Registrar no audit log
+    registrar_turno(
+        mensagem_usuario=estado["mensagem_usuario"],
+        resposta_agente=resposta_final,
+        agente_ativo=estado.get("agente_ativo", "desconhecido"),
+        intent=estado.get("intent_classificada", "desconhecido"),
+        tools_chamadas=estado.get("tools_chamadas", []),
+        flags_safety=estado.get("flags_safety", []),
+        beneficiario_id=estado.get("beneficiario_id", "BENEF-001"),
+    )
 
-    grafo.add_conditional_edges(
+    return {
+        "resposta_final": resposta_final,
+        "historico": novo_historico,
+    }
+
+# Roteamento condicional
+
+def decidir_agente(estado: EstadoBlua) -> str:
+    """
+    Decide qual nó acionar com base na intent classificada.
+    Retorna o nome do próximo nó.
+    """
+    intent = estado.get("intent_classificada", "checkup")
+
+    mapa = {
+        "checkup": "checkup",
+        "triagem": "triagem",
+        "suporte": "suporte",
+        "fora_de_escopo": "fora_escopo",
+    }
+
+    return mapa.get(intent, "checkup")
+
+
+# Construção do grafo
+
+def construir_grafo() -> StateGraph:
+    """
+    Constrói e compila o StateGraph do BluaDiagnostics.
+
+    Retorna grafo compilado com MemorySaver para
+    persistência de estado entre turnos (memória multi-turno).
+    """
+    builder = StateGraph(EstadoBlua)
+
+    # Adicionar nós
+    builder.add_node("roteador", no_roteador)
+    builder.add_node("checkup", no_checkup)
+    builder.add_node("triagem", no_triagem)
+    builder.add_node("suporte", no_suporte)
+    builder.add_node("fora_escopo", no_fora_escopo)
+    builder.add_node("safety", no_safety)
+    builder.add_node("saida", no_saida)
+
+    # Ponto de entrada
+    builder.set_entry_point("roteador")
+
+    # Roteamento condicional após classificação de intent
+    builder.add_conditional_edges(
         "roteador",
-        _rotear_intent,
+        decidir_agente,
         {
             "checkup": "checkup",
             "triagem": "triagem",
-            "prescricao": "prescricao",
-            "duvida_geral": "duvida_geral",
+            "suporte": "suporte",
             "fora_escopo": "fora_escopo",
-        },
+        }
     )
 
-    for no_resposta in ("checkup", "triagem", "prescricao", "duvida_geral", "fora_escopo"):
-        grafo.add_edge(no_resposta, "safety")
+    # Todos os agentes vão para safety
+    builder.add_edge("checkup", "safety")
+    builder.add_edge("triagem", "safety")
+    builder.add_edge("suporte", "safety")
+    builder.add_edge("fora_escopo", "safety")
 
-    grafo.add_edge("safety", "audit")
-    grafo.add_edge("audit", END)
+    # Safety vai para saída
+    builder.add_edge("safety", "saida")
 
-    return grafo.compile(checkpointer=MemorySaver())
+    # Saída encerra o grafo
+    builder.add_edge("saida", END)
 
+    # Compilar com memória para multi-turno
+    memoria = MemorySaver()
+    grafo = builder.compile(checkpointer=memoria)
+
+    print("[graph] Grafo BluaDiagnostics compilado com sucesso.")
+    return grafo
+
+
+# Função de execução de turno
 
 def executar_turno(
-    grafo: Any,
+    grafo: StateGraph,
     mensagem_usuario: str,
     thread_id: str,
-    beneficiario_id: str | None = None,
-    backend: str = "dashscope",
-    historico: list[dict[str, Any]] | None = None,
-    medicacao_proposta: list[str] | None = None,
-) -> dict[str, Any]:
-    """Envia um turno do usuário ao grafo e retorna o estado final.
-
-    Reutilize o mesmo `thread_id` em chamadas sucessivas para manter
-    memória multi-turno; passe um novo id para começar do zero.
+    beneficiario_id: str = "BENEF-001",
+    historico: list[dict] | None = None,
+) -> dict:
     """
-    historico = historico or []
-    historico.append({"role": "user", "content": mensagem_usuario})
+    Executa um turno de conversa no grafo.
 
-    estado_inicial: EstadoBlua = {
-        "mensagens": historico,
+    Args:
+        grafo: Grafo compilado pelo construir_grafo().
+        mensagem_usuario: Mensagem atual do usuário.
+        thread_id: ID único da sessão — preserva memória entre turnos.
+        beneficiario_id: ID do beneficiário mockado.
+        historico: Histórico externo opcional (para compatibilidade com CLI).
+
+    Returns:
+        Estado final do grafo após o turno.
+    """
+    estado_inicial = {
+        "mensagem_usuario": mensagem_usuario,
         "beneficiario_id": beneficiario_id,
-        "intent_classificada": None,
-        "agente_ativo": None,
-        "dossie_queixas": {},
-        "classificacao_risco": None,
-        "rag_chunks": [],
-        "tools_invocadas": [],
-        "safety_aprovado": True,
-        "safety_motivos": [],
-        "resposta_final": None,
-        "audit_log": {},
-        "backend": backend,
-        "medicacao_proposta": medicacao_proposta,
+        "historico": historico or [],
+        "intent_classificada": "",
+        "confianca_intent": 0.0,
+        "resposta_agente": "",
+        "agente_ativo": "",
+        "tools_chamadas": [],
+        "resposta_validada": "",
+        "flags_safety": [],
+        "aprovado": True,
+        "resposta_final": "",
     }
 
     config = {"configurable": {"thread_id": thread_id}}
-    return grafo.invoke(estado_inicial, config=config)
+
+    estado_final = grafo.invoke(estado_inicial, config=config)
+    return estado_final

@@ -1,17 +1,17 @@
-"""Tools (function calling) do BluaDiagnostics — todas com dados mockados."""
+"""
+Exporta todas as tools para uso nos agentes
+"""
 
-from src.tools.historico import consultar_historico_paciente
-from src.tools.interacoes import verificar_interacoes_medicamentosas
-from src.tools.agendamento import agendar_teleconsulta
-from src.tools.wearable import consultar_sinais_vitais_wearable
-from src.tools.classificador_risco import classificar_risco_clinico
+from .historico import consultar_historico_paciente
+from .interacoes import verificar_interacoes_medicamentosas
+from .agendamento import agendar_teleconsulta
+from .ritmo import analisar_ritmo_cardiaco
+from .wearable import consultar_sinais_vitais_wearable
 
-# Dispatch table consumida pelos nós do grafo:
-#   TOOL_REGISTRY[nome](**args)
-TOOL_REGISTRY = {
-    "consultar_historico_paciente": consultar_historico_paciente,
-    "verificar_interacoes_medicamentosas": verificar_interacoes_medicamentosas,
-    "agendar_teleconsulta": agendar_teleconsulta,
-    "consultar_sinais_vitais_wearable": consultar_sinais_vitais_wearable,
-    "classificar_risco_clinico": classificar_risco_clinico,
-}
+__all__ = [
+    "consultar_historico_paciente",
+    "verificar_interacoes_medicamentosas",
+    "agendar_teleconsulta",
+    "analisar_ritmo_cardiaco",
+    "consultar_sinais_vitais_wearable"
+]

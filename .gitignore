@@ -28,6 +28,7 @@ sentence_transformers/
 # Logs estruturados
 logs/*.json
 logs/*.log
+logs/*.jsonl
 
 # Banco de dados vetorial (regenerável)
 chroma_db/

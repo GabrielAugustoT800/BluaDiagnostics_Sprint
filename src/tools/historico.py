@@ -1,55 +1,83 @@
-"""Tool: consulta histórico clínico do beneficiário Care Plus (mockado).
-
-Lê de ``data/mocks/perfis_clinicos.json``. Em produção viraria chamada
-autenticada ao prontuário eletrônico (FHIR/HL7) com escopos OAuth e
-consentimento LGPD.
 """
-
-from __future__ import annotations
+Tool: consultar_historico_paciente
+Consulta o histórico clínico cardiovascular do beneficiário por tipo
+"""
 
 import json
 from pathlib import Path
-from typing import Any
 
-from pydantic import BaseModel, Field
-
-# Caminho para o mock — relativo à raiz do projeto
+# Caminho para o mock de perfis clínicos
 _MOCK_PATH = Path(__file__).resolve().parents[2] / "data" / "mocks" / "perfis_clinicos.json"
 
 
-class HistoricoInput(BaseModel):
-    """Schema de entrada validado por Pydantic."""
+def consultar_historico_paciente(paciente_id: str, tipo: str) -> dict:
+    """
+    Consulta o histórico cardiovascular do beneficiário por tipo.
 
-    beneficiario_id: str = Field(..., description="ID no formato BENEF-XXX")
+    Args:
+        paciente_id: ID do beneficiário. Ex: BENEF-001
+        tipo: condicoes | medicacoes | consultas | exames | sinais_vitais
 
+    Returns:
+        Dicionário com os dados solicitados ou erro se não encontrado.
+    """
+    tipos_validos = {"condicoes", "medicacoes", "consultas", "exames", "sinais_vitais"}
 
-def _carregar_mock() -> dict[str, Any]:
-    with _MOCK_PATH.open("r", encoding="utf-8") as fp:
-        return json.load(fp)
-
-
-def consultar_historico_paciente(beneficiario_id: str) -> dict[str, Any]:
-    """Retorna o dossiê clínico mockado do beneficiário."""
-    HistoricoInput(beneficiario_id=beneficiario_id)
-
-    base = _carregar_mock()
-    perfil = base.get(beneficiario_id)
-
-    if perfil is None:
+    if tipo not in tipos_validos:
         return {
-            "encontrado": False,
-            "beneficiario_id": beneficiario_id,
-            "mensagem": "Beneficiário não localizado na base mockada.",
+            "erro": f"Tipo '{tipo}' inválido.",
+            "tipos_validos": list(tipos_validos)
         }
 
-    return {
-        "encontrado": True,
-        "beneficiario_id": perfil["beneficiario_id"],
-        "nome": perfil["nome"],
-        "idade": perfil["idade"],
-        "sexo": perfil["sexo"],
-        "condicoes_cronicas": perfil["condicoes_cronicas"],
-        "alergias": perfil["alergias"],
-        "medicamentos_em_uso": perfil["medicamentos_em_uso"],
-        "ultimas_consultas": perfil["ultimas_consultas"],
+    # Carregar mock
+    with open(_MOCK_PATH, "r", encoding="utf-8") as f:
+        dados = json.load(f)
+
+    # Buscar beneficiário
+    beneficiario = next(
+        (b for b in dados["beneficiarios"] if b["id"] == paciente_id),
+        None
+    )
+
+    if not beneficiario:
+        return {"erro": f"Beneficiário '{paciente_id}' não encontrado."}
+
+    # Mapear tipo para campo do mock
+    mapa = {
+        "condicoes": {
+            "paciente_id": paciente_id,
+            "tipo": "condicoes",
+            "dados": {
+                "condicoes_ativas": beneficiario.get("condicoes_ativas", []),
+                "score_risco_cardiovascular": beneficiario.get("score_risco_cardiovascular"),
+                "ultima_atualizacao": beneficiario.get("consultas", {}).get("ultima", {}).get("data")
+            }
+        },
+        "medicacoes": {
+            "paciente_id": paciente_id,
+            "tipo": "medicacoes",
+            "dados": {
+                "medicacoes_ativas": beneficiario.get("medicacoes_ativas", []),
+                "alergias": beneficiario.get("alergias", []),
+            }
+        },
+        "consultas": {
+            "paciente_id": paciente_id,
+            "tipo": "consultas",
+            "dados": beneficiario.get("consultas", {})
+        },
+        "exames": {
+            "paciente_id": paciente_id,
+            "tipo": "exames",
+            "dados": {
+                "exames_recentes": beneficiario.get("exames_recentes", [])
+            }
+        },
+        "sinais_vitais": {
+            "paciente_id": paciente_id,
+            "tipo": "sinais_vitais",
+            "dados": beneficiario.get("sinais_vitais_ultimo_registro", {})
+        },
     }
+
+    return mapa[tipo]

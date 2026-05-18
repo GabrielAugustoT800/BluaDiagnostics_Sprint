@@ -1,199 +1,151 @@
-# Políticas Care Plus de telemedicina
+# Políticas Care Plus — Telemedicina e Plataforma Blua
+## BluaDiagnostics — Base de Conhecimento Clínico
+### Fonte: careplus.com.br, exame.com (out/2024), blogdocorretor.com (fev/2024)
+### Versão: 1.0.0 | 2026-05-15
 
-> Documento de referência para o agente Blua. Resume o funcionamento do
-> programa de teleconsulta da operadora Care Plus, suas especialidades
-> elegíveis, regras de cobertura e fluxos de emergência.
+---
 
-## Princípios gerais
+## 1. A Plataforma Blua
 
-A Care Plus oferece teleconsulta como modalidade complementar ao atendimento
-presencial, regulada pela CFM Resolução 2.314/2022 (Telemedicina) e pela
-LGPD (Lei 13.709/2018). Toda teleconsulta:
+A Blua é a plataforma de saúde digital da Care Plus, lançada em
+dezembro de 2023. Unifica os serviços digitais de saúde da
+operadora em um único aplicativo, com o objetivo de transformar
+a jornada do cuidado — de reativa para proativa.
 
-- É registrada com gravação criptografada armazenada por cinco anos.
-- Gera prontuário digital integrado ao histórico do beneficiário.
-- Permite emissão de receituário, atestado e SADT digitais com assinatura
-  via ICP-Brasil ou padrão equivalente.
-- Pode ser convertida em encaminhamento presencial quando o médico julgar
-  necessário.
+A plataforma já é utilizada por mais de 25% dos beneficiários
+da Care Plus. No primeiro semestre de 2024, foram registradas
+42 mil consultas virtuais pela plataforma.
 
-## Especialidades cobertas em telemedicina
+---
 
-### 1. Clínica geral
+## 2. Serviços Disponíveis na Blua
 
-Porta de entrada do programa. Atende sintomas inespecíficos, dúvidas sobre
-medicação, renovação de receita e triagem de queixas. Disponibilidade 24/7
-para urgência. Tempo médio de espera em horário comercial: até 8 minutos.
+### Teleconsulta
+Consultas médicas com especialistas por videoconferência,
+acessíveis pelo aplicativo Care Plus. Inclui:
+- Pronto-atendimento virtual — disponível a qualquer momento,
+  sem agendamento prévio
+- Consultas com especialistas agendadas — incluindo cardiologia
 
-### 2. Pediatria
+### Telepsicologia
+Atendimento psicológico por videoconferência. Canal adequado
+para questões de saúde mental — fora do escopo do BluaDiagnostics.
 
-Atende crianças de 0 a 14 anos. Inclui acompanhamento longitudinal,
-orientação a pais e responsáveis, manejo de quadros agudos como febre,
-diarreia, dermatite, otite. Restrição: lactentes < 3 meses com febre devem
-ser direcionados a atendimento presencial.
+### Programas Preventivos
+Programas de acompanhamento de saúde incluindo prevenção de
+doenças cardiovasculares — área de atuação direta do
+BluaDiagnostics.
 
-### 3. Ginecologia
+### Teste de Bem-Estar
+Recurso inédito no Brasil que avalia sinais biométricos em tempo
+real por câmera do smartphone — batimentos cardíacos, nível de
+estresse e saúde da pele via medição óptica transdérmica com
+inteligência artificial.
 
-Atende dúvidas sobre ciclo menstrual, contracepção, sintomas urinários,
-acompanhamento pré-natal de baixo risco e renovação de receitas. Coletas
-e exames físicos (ex.: Papanicolau, ultrassom transvaginal) ficam fora do
-escopo digital — agendados em rede presencial.
+### Gestão de Plano
+Autorização e reimbursamento, rede credenciada, IRPF, entre outros.
 
-### 4. Dermatologia
+---
 
-Atende lesões cutâneas com fotos enviadas previamente pelo app. Não
-substitui dermatoscopia presencial em lesões suspeitas de malignidade. Útil
-para acne, dermatite, psoríase estável, alopecia, orientação cosmiátrica.
+## 3. Como Agendar Teleconsulta pelo Blua
 
-### 5. Psiquiatria
+O agente BluaDiagnostics pode acionar o agendamento via tool
+`agendar_teleconsulta`. Do ponto de vista do beneficiário, o
+fluxo no aplicativo é:
 
-Atende transtornos de humor, ansiedade, sono e dependências leves a
-moderadas. Inclui prescrição de psicotrópicos não controlados via tarja
-preta digital quando a normativa permite. Encaminhamento para emergência em
-ideação suicida ativa, surto psicótico ou quadros de violência.
+1. Abrir o aplicativo Care Plus
+2. Acessar o menu Blua
+3. Selecionar Teleconsulta
+4. Escolher entre Pronto Atendimento Virtual ou consulta agendada
+5. Selecionar especialidade (Cardiologia para casos cardiovasculares)
+6. Confirmar horário e receber link de acesso
 
-### 6. Endocrinologia
+Para urgências cardiovasculares identificadas pelo agente, o
+pronto-atendimento virtual é o canal mais rápido — sem necessidade
+de agendamento prévio.
 
-Acompanhamento de diabetes, dislipidemia, distúrbios da tireoide e
-obesidade. Integra dados do wearable do paciente (glicemia capilar via app
-parceiro, passos, sono) na consulta. Solicitações de exame seguem fluxo
-laboratorial Care Plus.
+---
 
-### 7. Cardiologia
+## 4. Níveis de Urgência no Agendamento
 
-Avaliação de hipertensão controlada, dislipidemia, acompanhamento pós-IAM
-ou pós-cirúrgico estável. Eletrocardiograma e ecocardiograma exigem
-presencial. Em caso de dor torácica em curso, o agente direciona
-imediatamente para SAMU 192 e não tenta agendar consulta digital.
+O BluaDiagnostics classifica o agendamento em três níveis
+conforme a avaliação clínica:
 
-### 8. Nutrição
+### Urgente
+Disponibilidade em aproximadamente 20 minutos via plantão
+cardiológico. Acionado quando há red flag cardiovascular sem
+indicação de SAMU imediato — arritmia com síncope, pressão
+acima de 180x120 sem sintoma neurológico, dor torácica atípica
+com outros fatores de risco.
 
-Atendimento por nutricionista cadastrado no programa, com plano alimentar
-personalizado, integração com diário alimentar do app Blua e
-acompanhamento mensal.
+### Prioritário
+Disponibilidade no mesmo dia. Acionado quando há sintoma
+cardiovascular ativo que requer avaliação nas próximas horas —
+palpitações com mal-estar, ritmo irregular detectado pelo ML,
+interação medicamentosa moderada ou grave identificada.
 
-## Regras de cobertura
+### Rotina
+Próxima disponibilidade em dias. Acionado para retornos
+preventivos, dúvidas sobre medicação sem urgência, check-up
+sem alterações.
 
-- **Inclusos no plano Care Plus Premium**: teleconsulta ilimitada em todas
-  as especialidades acima.
-- **Care Plus Essencial**: teleconsulta ilimitada em clínica geral,
-  pediatria e psiquiatria; demais especialidades sob coparticipação simbólica
-  de R$ 25 por consulta.
-- **Care Plus Sênior**: teleconsulta ilimitada e visita domiciliar
-  programada para acamados (fora do escopo digital).
+---
 
-## Fluxo de emergência
+## 5. Cobertura de Telemedicina — Aspectos Regulatórios
 
-A teleconsulta **não substitui** pronto atendimento em situações de
-emergência. O agente Blua deve, sempre que houver red flag:
+A telemedicina no Brasil é regulamentada pela CFM Resolução
+2.314/2022, que estabelece:
 
-1. Interromper a triagem.
-2. Orientar SAMU 192 e/ou pronto-socorro mais próximo.
-3. Informar o endereço de retaguarda Care Plus quando houver na localização
-   do paciente.
-4. Registrar evento no audit log com `manchester=vermelho`.
-5. Oferecer permanecer na conversa até o atendimento humano assumir.
-6. Disparar notificação automatizada à equipe médica plantonista da Care
-   Plus (em produção; PoC simula).
+- Teleconsulta é permitida em todas as especialidades médicas
+- O médico deve ser devidamente identificado e registrado no CRM
+- A prescrição digital requer assinatura eletrônica qualificada
+  (ICP-Brasil) pelo médico responsável
+- O prontuário eletrônico deve ser mantido pelo médico
 
-## Fluxo de prescrição remota inteligente
+O BluaDiagnostics opera dentro desses limites — nunca emite
+prescrição, nunca assina documentos médicos, sempre encaminha
+para aprovação do médico cardiologista responsável.
 
-Quando médico atendente solicita apoio do agente Blua para prescrição:
+---
 
-1. Agente consulta histórico via `consultar_historico_paciente`.
-2. Verifica interações com `verificar_interacoes_medicamentosas`.
-3. Sugere prescrição estruturada **marcada como
-   `RASCUNHO_AGUARDANDO_REVISAO_MEDICA`**.
-4. Médico revisa, edita, assina digitalmente e libera ao paciente.
-5. O sistema **nunca** dispara prescrição final sem aprovação humana
-   explícita, conforme CFM Res. 2.314/22.
+## 6. Programa de Prevenção Cardiovascular Care Plus
 
-## Direitos do beneficiário
+A Care Plus oferece programa específico de prevenção de doenças
+cardiovasculares, que inclui:
 
-- Solicitar a qualquer momento que a interação seja transferida a um humano.
-- Pedir cópia do histórico de interações no padrão LGPD (portabilidade).
-- Solicitar exclusão de dados não obrigatórios para fins assistenciais.
-- Receber explicação clara sobre uso de IA antes de iniciar a conversa
-  (consentimento informado).
-- Recusar gravação e seguir apenas com atendimento presencial.
+- Acompanhamento com cardiologista, nutricionista e enfermeira
+- Monitoramento de pressão arterial e frequência cardíaca
+- Orientação sobre hábitos de vida — alimentação, exercício,
+  cessação do tabagismo
+- Integração com dados de wearables para monitoramento contínuo
 
-## Limites operacionais
+O BluaDiagnostics é parte da evolução desse programa —
+transformando o acompanhamento reativo em cuidado proativo
+com check-up digital conversacional e detecção precoce de
+alterações cardiovasculares.
 
-A teleconsulta Care Plus não cobre:
+---
 
-- Procedimentos invasivos ou cirurgias.
-- Atendimento obstétrico em trabalho de parto.
-- Acompanhamento intensivo de pacientes graves domiciliares.
-- Atestado para fins judiciais ou periciais.
-- Solicitação de exames de alto custo sem indicação clínica documentada.
+## 7. Privacidade e LGPD na Plataforma Blua
 
-## Indicadores de qualidade monitorados
+Os dados de saúde dos beneficiários são classificados como dados
+sensíveis pela LGPD (Lei 13.709/2018, art. 11) e exigem:
 
-- Tempo médio de espera por especialidade.
-- NPS pós-consulta.
-- Taxa de reagendamento ou conversão a presencial.
-- Eventos adversos relatados.
-- Aderência ao protocolo de red flags pelo agente Blua (auditado mensalmente
-  via amostragem de logs).
+- Consentimento explícito do titular para tratamento
+- Finalidade específica e informada
+- Armazenamento em território nacional
+- Direitos de acesso, portabilidade e exclusão garantidos ao
+  beneficiário
+- Nomeação de Encarregado de Dados (DPO) pela operadora
 
-## Integração com a jornada do beneficiário
+O BluaDiagnostics, em sua versão de PoC acadêmica, utiliza
+dados exclusivamente mockados — sem dados reais de beneficiários.
+Em produção, exigiria conformidade completa com LGPD e
+certificação SBIS.
 
-A teleconsulta Care Plus não é uma ilha — está integrada à jornada
-contínua do beneficiário no app Blua. A operadora monitora cinco pontos
-de contato principais:
+---
 
-1. **Pré-consulta**: o agente Blua coleta a queixa, organiza dossiê
-   estruturado e antecipa ao médico um resumo das últimas três consultas
-   relevantes, alergias, medicações em uso e dados de wearable
-   relevantes. O médico recebe esse pacote 5 minutos antes da chamada,
-   reduzindo tempo de anamnese e aumentando a qualidade do encontro.
-
-2. **Durante a consulta**: o sistema oferece ao médico (em painel
-   lateral) sugestões de protocolos, alertas de interações
-   medicamentosas e referências da knowledge base — sempre como apoio
-   informativo, nunca como substituto da decisão clínica.
-
-3. **Pós-consulta**: a prescrição passa pelo agente de Prescrição, que
-   verifica interações com medicações em uso, alerta sobre alergias e
-   compatibilidade com função renal/hepática quando há registro. O
-   médico recebe o rascunho, revisa, edita se necessário e assina
-   digitalmente.
-
-4. **Aderência terapêutica**: 7, 14 e 30 dias após a consulta, o agente
-   reabre canal proativo perguntando como o beneficiário está, se
-   conseguiu tomar as medicações, se houve efeito adverso. As respostas
-   são logadas e devolvidas ao médico em painel longitudinal.
-
-5. **Conversão presencial**: quando o médico decide converter para
-   atendimento presencial, o agente facilita o agendamento na rede
-   credenciada Care Plus, com transporte sanitário disponível para
-   beneficiários elegíveis (Sênior, Premium).
-
-## Garantia institucional Care Plus
-
-A operadora se compromete formalmente com:
-
-- **Disponibilidade 24/7** de clínica geral em telemedicina.
-- **Tempo máximo de espera** de 10 minutos em horário comercial para
-  clínica geral, conforme acordo de nível de serviço (SLA) auditável.
-- **Sigilo absoluto** dos dados clínicos, com armazenamento em data
-  centers em território nacional.
-- **Direito de recusa** de teleconsulta em qualquer momento — o
-  beneficiário sempre pode optar por presencial.
-- **Encaminhamento gratuito** para emergência quando indicado, com cobertura
-  total de remoção pelo SAMU credenciado.
-
-## Auditoria interna periódica
-
-A cada trimestre, o time de qualidade clínica Care Plus audita uma
-amostra aleatória de 200 atendimentos. Critérios:
-
-- Aderência ao protocolo de triagem.
-- Adequação da especialidade indicada.
-- Segurança da prescrição emitida.
-- Tempo de resposta a red flags.
-- Qualidade do registro em prontuário.
-
-Resultados auditados são compartilhados com a Diretoria Médica e geram
-plano de ação trimestral. Em casos de divergência crítica (ex.: red flag
-não escalonada), há revisão imediata e treinamento do agente.
+*Documento elaborado para fins acadêmicos com base em informações
+públicas da Care Plus (careplus.com.br) e legislação vigente.*
+*Informações sobre cobertura e serviços podem ser alteradas pela
+operadora sem aviso prévio.*

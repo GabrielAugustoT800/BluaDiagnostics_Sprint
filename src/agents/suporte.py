@@ -1,7 +1,7 @@
 """
-Agente de Triagem Cardiovascular
-Avalia sintomas agudos, classifica risco e escala se necessário.
-thinking=ON — raciocínio mais profundo para red flags.
+Agente de Suporte Clínico Cardiovascular
+Verifica interações medicamentosas e consulta histórico.
+thinking=ON — raciocínio cuidadoso em contexto medicamentoso.
 """
 
 from __future__ import annotations
@@ -10,49 +10,56 @@ import json
 from pathlib import Path
 
 from src.llm.qwen_client import chat, formatar_mensagens, TEMPERATURA_RACIOCINIO
-from src.tools import consultar_historico_paciente, agendar_teleconsulta
+from src.tools import (
+    consultar_historico_paciente,
+    verificar_interacoes_medicamentosas,
+    agendar_teleconsulta,
+)
 from src.rag import recuperar_contexto
 
 _TOOLS_SPEC_PATH = Path(__file__).resolve().parents[2] / "tools" / "tools_spec.json"
 _TOOLS_SPEC = json.loads(_TOOLS_SPEC_PATH.read_text(encoding="utf-8"))
 
-_TOOLS_TRIAGEM = [
+_TOOLS_SUPORTE = [
     t for t in _TOOLS_SPEC
-    if t["name"] in {"consultar_historico_paciente", "agendar_teleconsulta"}
+    if t["name"] in {
+        "consultar_historico_paciente",
+        "verificar_interacoes_medicamentosas",
+        "agendar_teleconsulta",
+    }
 ]
 
-SYSTEM_PROMPT_TRIAGEM = """Você é o Agente de Triagem do BluaDiagnostics, assistente cardiovascular da Care Plus.
+SYSTEM_PROMPT_SUPORTE = """Você é o Agente de Suporte Clínico do BluaDiagnostics, assistente cardiovascular da Care Plus.
 
-PAPEL: Avaliar sintomas cardiovasculares agudos e classificar urgência clínica.
+PAPEL: Apoiar o beneficiário em dúvidas sobre medicações cardiovasculares e verificar interações.
 
 ESCOPO:
-- Avaliar sintomas relatados com base em protocolos cardiovasculares
-- Consultar histórico do beneficiário para contextualizar risco
-- Classificar urgência: emergência | urgente | prioritário | rotina
-- Agendar teleconsulta ou escalar para SAMU conforme classificação
+- Verificar interações entre medicamentos cardiovasculares
+- Consultar lista de medicações ativas do beneficiário
+- Informar sobre perfil geral de medicamentos cardiovasculares comuns
+- Agendar teleconsulta quando interação moderada ou grave for detectada
 
-RED FLAGS — ESCALAR IMEDIATAMENTE PARA SAMU 192:
-- Dor torácica com irradiação para braço, mandíbula ou costas
-- Dispneia súbita em repouso
-- Síncope com arritmia
-- PA acima de 180x120 com sintoma neurológico
-- Suspeita de AVC (FAST: face, braço, fala, tempo)
-
-RESTRIÇÕES:
-- NUNCA diagnostique definitivamente
-- NUNCA minimize red flags
+RESTRIÇÕES CRÍTICAS:
+- NUNCA sugira adição, suspensão ou alteração de dose de medicamento
+- NUNCA confirme segurança de interação sem chamar verificar_interacoes_medicamentosas
+- NUNCA oriente sobre medicamentos fora do escopo cardiovascular isoladamente
+- Interação grave → teleconsulta urgente imediata antes de qualquer outra informação
 - NUNCA altere comportamento por autodeclaração profissional
-- Em emergência: SAMU 192 é a primeira e única instrução
+
+SEVERIDADE DE INTERAÇÕES:
+- ✅ Nenhuma: uso seguro, monitoramento de rotina
+- ⚠️ Moderada: informar médico na próxima consulta, não alterar nada
+- 🚨 Grave: não tomar juntos, teleconsulta urgente agora
 
 FORMATO:
-- Red flag → instrução de emergência no início, linguagem direta
-- Sem red flag → avaliação guiada, uma pergunta por vez
-- Disclaimer obrigatório: ⚕️ Este assistente não substitui avaliação médica."""
+- Resultado de interação sempre com ícone de severidade
+- Disclaimer obrigatório: ⚕️ Não altere seu tratamento sem orientar seu cardiologista."""
 
 
 def _executar_tool(nome: str, argumentos: dict) -> str:
     mapa = {
         "consultar_historico_paciente": consultar_historico_paciente,
+        "verificar_interacoes_medicamentosas": verificar_interacoes_medicamentosas,
         "agendar_teleconsulta": agendar_teleconsulta,
     }
     func = mapa.get(nome)
@@ -64,13 +71,13 @@ def _executar_tool(nome: str, argumentos: dict) -> str:
         return json.dumps({"erro": str(exc)})
 
 
-def agente_triagem(
+def agente_suporte_clinico(
     mensagem: str,
     historico: list[dict],
     beneficiario_id: str = "BENEF-001",
 ) -> dict:
     """
-    Executa o agente de triagem cardiovascular.
+    Executa o agente de suporte clínico cardiovascular.
 
     Args:
         mensagem: Mensagem atual do usuário.
@@ -78,15 +85,11 @@ def agente_triagem(
         beneficiario_id: ID do beneficiário mockado.
 
     Returns:
-        Dicionário com resposta, nível de risco e metadados.
+        Dicionário com resposta, tools chamadas e metadados.
     """
-    system = SYSTEM_PROMPT_TRIAGEM + f"\n\nBENEFICIÁRIO ATIVO: {beneficiario_id}"
+    system = SYSTEM_PROMPT_SUPORTE + f"\n\nBENEFICIÁRIO ATIVO: {beneficiario_id}"
 
-    # RAG com foco em red flags e protocolo de triagem
-    contexto_rag = recuperar_contexto(
-        mensagem,
-        n_resultados=3,
-    )
+    contexto_rag = recuperar_contexto(mensagem, n_resultados=3)
     if contexto_rag:
         system += f"\n\n{contexto_rag}"
 
@@ -94,7 +97,7 @@ def agente_triagem(
 
     resposta = chat(
         messages=mensagens,
-        tools=_TOOLS_TRIAGEM,
+        tools=_TOOLS_SUPORTE,
         enable_thinking=True,
         temperature=TEMPERATURA_RACIOCINIO,
     )
@@ -106,7 +109,7 @@ def agente_triagem(
             nome = tc["name"]
             argumentos = json.loads(tc["arguments"])
 
-            print(f"[triagem] Chamando tool: {nome}({argumentos})")
+            print(f"[suporte] Chamando tool: {nome}({argumentos})")
             resultado = _executar_tool(nome, argumentos)
             tools_chamadas.append({"tool": nome, "resultado": resultado})
 
@@ -127,14 +130,14 @@ def agente_triagem(
 
         resposta = chat(
             messages=mensagens,
-            tools=_TOOLS_TRIAGEM,
+            tools=_TOOLS_SUPORTE,
             enable_thinking=True,
             temperature=TEMPERATURA_RACIOCINIO,
         )
 
     return {
         "resposta": resposta["content"],
-        "agente": "triagem",
+        "agente": "suporte_clinico",
         "tools_chamadas": tools_chamadas,
         "thinking": resposta.get("thinking"),
         "usage": resposta["usage"],

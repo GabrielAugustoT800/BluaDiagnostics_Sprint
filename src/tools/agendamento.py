@@ -1,89 +1,63 @@
-"""Tool: agendamento de teleconsulta Care Plus (mockado).
-
-Entrada: especialidade + data preferida + urgência (baixa/media/alta).
-Saída: ID da consulta, horário, link, médico. A urgência define a janela
-de SLA (1h / 24h / 7 dias) — em produção esses limites virão da política
-da operadora.
+"""
+Tool: agendar_teleconsulta
+Agenda teleconsulta com cardiologista na plataforma Blua. Fictício
 """
 
-from __future__ import annotations
-
 import json
-import random
-from datetime import datetime, timedelta, timezone
+import uuid
 from pathlib import Path
-from typing import Any, Literal
-
-from pydantic import BaseModel, Field
 
 _MOCK_PATH = Path(__file__).resolve().parents[2] / "data" / "mocks" / "agendamentos.json"
 
-# Janela de horário de atendimento por urgência (em minutos a partir de agora)
-_JANELA_POR_URGENCIA: dict[str, int] = {
-    "alta": 60,
-    "media": 24 * 60,
-    "baixa": 7 * 24 * 60,
-}
-
-
-class AgendamentoInput(BaseModel):
-    especialidade: str
-    data_preferencia: str = Field(..., description="Data ISO 8601 YYYY-MM-DD")
-    urgencia: Literal["baixa", "media", "alta"]
-
-
-def _carregar_mock() -> dict[str, Any]:
-    with _MOCK_PATH.open("r", encoding="utf-8") as fp:
-        return json.load(fp)
-
 
 def agendar_teleconsulta(
-    especialidade: str,
-    data_preferencia: str,
-    urgencia: Literal["baixa", "media", "alta"],
-) -> dict[str, Any]:
-    """Cria um agendamento mockado de teleconsulta.
-
-    A escolha do médico é determinística (primeiro da lista) para manter as
-    demos reproduzíveis.
+    urgencia: str,
+    motivo: str,
+    especialidade: str = "cardiologia"
+) -> dict:
     """
-    AgendamentoInput(
-        especialidade=especialidade,
-        data_preferencia=data_preferencia,
-        urgencia=urgencia,
-    )
+    Agenda teleconsulta com cardiologista na plataforma Blua.
 
-    base = _carregar_mock()
-    medicos = base["medicos_disponiveis"].get(especialidade.lower())
-    if not medicos:
+    Args:
+        urgencia: rotina | prioritario | urgente
+        motivo: Resumo clínico gerado pelo agente para briefing do médico.
+        especialidade: Especialidade médica. Default: cardiologia.
+
+    Returns:
+        Dicionário com confirmação e dados do agendamento.
+    """
+    urgencias_validas = {"rotina", "prioritario", "urgente"}
+
+    if urgencia not in urgencias_validas:
         return {
-            "sucesso": False,
-            "mensagem": (
-                f"Especialidade '{especialidade}' não está disponível em telemedicina "
-                "ou não foi reconhecida. Especialidades cobertas: "
-                f"{list(base['medicos_disponiveis'].keys())}"
-            ),
+            "erro": f"Urgência '{urgencia}' inválida.",
+            "urgencias_validas": list(urgencias_validas)
         }
 
-    medico = medicos[0]
-    janela_min = _JANELA_POR_URGENCIA[urgencia]
-    horario = datetime.now(timezone.utc) + timedelta(minutes=janela_min)
+    with open(_MOCK_PATH, "r", encoding="utf-8") as f:
+        dados = json.load(f)
 
-    sufixo = "".join(random.choices("0123456789", k=5))
-    id_consulta = f"TC-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{sufixo}"
-    link = base["template_link"].format(id_consulta=id_consulta)
+    slots = dados["slots_disponiveis"].get(urgencia, [])
+
+    if not slots:
+        return {"erro": f"Nenhum slot disponível para urgência '{urgencia}'."}
+
+    # Selecionar primeiro slot disponível
+    slot = slots[0]
+
+    # Gerar código de confirmação único
+    codigo = f"BLU-{urgencia[:3].upper()}-{uuid.uuid4().hex[:4].upper()}"
+    link = f"{slot['link_base']}-{codigo.lower()}"
 
     return {
-        "sucesso": True,
-        "id_consulta": id_consulta,
-        "horario_confirmado": horario.isoformat(),
-        "link_teleconsulta": link,
-        "medico_atribuido": medico,
-        "especialidade": especialidade.lower(),
+        "agendado": True,
+        "especialidade": especialidade,
         "urgencia": urgencia,
-        "observacao": (
-            "Este é um agendamento simulado para fins de demonstração. "
-            "Em produção, dispararia confirmação por SMS, push e e-mail "
-            "ao beneficiário."
-        ),
+        "medico": slot["medico"],
+        "disponibilidade": slot["disponibilidade"],
+        "plataforma": slot["plataforma"],
+        "link_acesso": link,
+        "codigo_confirmacao": codigo,
+        "instrucoes": slot["instrucoes"],
+        "motivo_registrado": motivo
     }
