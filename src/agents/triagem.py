@@ -17,7 +17,8 @@ _TOOLS_SPEC_PATH = Path(__file__).resolve().parents[2] / "tools" / "tools_spec.j
 _TOOLS_SPEC = json.loads(_TOOLS_SPEC_PATH.read_text(encoding="utf-8"))
 
 _TOOLS_TRIAGEM = [
-    t for t in _TOOLS_SPEC
+    {"type": "function", "function": t}
+    for t in _TOOLS_SPEC
     if t["name"] in {"consultar_historico_paciente", "agendar_teleconsulta"}
 ]
 
