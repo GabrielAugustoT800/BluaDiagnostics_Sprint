@@ -27,7 +27,7 @@ _TOOLS_SPEC = json.loads(_TOOLS_SPEC_PATH.read_text(encoding="utf-8"))
 # Filtrar apenas as tools relevantes para este agente
 _TOOLS_CHECKUP = [
     t for t in _TOOLS_SPEC
-    if t["name"] in {
+    if t["function"]["name"] in {
         "consultar_historico_paciente",
         "analisar_ritmo_cardiaco",
         "consultar_sinais_vitais_wearable",
