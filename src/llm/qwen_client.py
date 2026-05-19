@@ -194,7 +194,7 @@ def smoke_test() -> bool:
         print(f"[smoke_test] FALHOU: {type(e).__name__}: {e}")
         return False
 
-def formatar_mensagem(
+def formatar_mensagens(
         system_prompt: str,
         historico: list[dict],
         mensagem_usuario: str
